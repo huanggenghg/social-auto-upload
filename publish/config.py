@@ -2,6 +2,7 @@
 """发布参数构建:PublishOverrides 是唯一参数源,cookies/ 账号自动发现"""
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from conf import BASE_DIR
@@ -51,6 +52,19 @@ def default_account_file(platform: str) -> Optional[str]:
     return str(account_dir / "account.json")
 
 
+def _discover_single_account_file(cookies_dir: Path, platform: str, prefix: str) -> Optional[Path]:
+    """Find the unambiguous account file for one platform."""
+    account_dir = cookies_dir / PLATFORM_ACCOUNT_SUBDIRS[platform]
+    canonical = account_dir / "account.json"
+    if canonical.is_file():
+        return canonical
+
+    legacy_files = sorted(cookies_dir.glob(f"{prefix}*.json"))
+    if account_dir.exists():
+        legacy_files.extend(sorted(account_dir.glob("*.json")))
+    return legacy_files[0] if len(legacy_files) == 1 else None
+
+
 def _discover_account_files() -> Dict[str, str]:
     cookies_dir = BASE_DIR / "cookies"
     platform_prefixes = {
@@ -66,13 +80,9 @@ def _discover_account_files() -> Dict[str, str]:
 
     platforms = {}
     for platform, prefix in platform_prefixes.items():
-        flat_files = sorted(cookies_dir.glob(f"{prefix}*.json"))
-        subdir = PLATFORM_ACCOUNT_SUBDIRS[platform]
-        subdir_files = sorted((cookies_dir / subdir).glob("*.json")) if (cookies_dir / subdir).exists() else []
-        account_files = flat_files + [file for file in subdir_files if file not in flat_files]
-        if account_files:
-            rel_paths = [str(file.relative_to(BASE_DIR)) for file in account_files]
-            platforms[f"{platform}_account"] = ", ".join(rel_paths)
+        account_file = _discover_single_account_file(cookies_dir, platform, prefix)
+        if account_file:
+            platforms[f"{platform}_account"] = str(account_file.relative_to(BASE_DIR))
     return platforms
 
 
