@@ -191,6 +191,12 @@ class PublishCliHelpTextTests(unittest.TestCase):
         self.assertNotIn("publish_config.ini", help_text)
         self.assertNotIn("[common]", help_text)
 
+    def test_help_does_not_invite_omitting_user_content(self):
+        help_text = publish_all.build_parser().format_help()
+        for fragment in ["留空则自动生成", "留空则尝试自动生成"]:
+            self.assertNotIn(fragment, help_text, f"--help 不应用 '{fragment}' 诱导 agent 不向用户收集文案")
+        self.assertIn("由用户提供", help_text)
+
 
 class SkillDocBlackboxTests(unittest.TestCase):
     SKILL_PATH = Path("skills/opub-cli/SKILL.md")
@@ -205,6 +211,12 @@ class SkillDocBlackboxTests(unittest.TestCase):
         self.assertIn("pip install opub", text)
         for code_doc in ["10", "11", "12", "CFG-", "ENV-", "AUTH-", "PUB-"]:
             self.assertIn(code_doc, text)
+
+    def test_publish_inputs_must_come_from_user(self):
+        text = self.SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("逐项向用户确认", text, "SKILL.md 必须要求 agent 执行前向用户逐项确认发布输入")
+        self.assertIn("不要自行检索文件系统", text, "SKILL.md 必须禁止 agent 自行检索文件系统挑素材")
+        self.assertIn("仅当用户明确", text, "自动生成只允许在用户明确授权时使用")
 
 
 if __name__ == "__main__":
