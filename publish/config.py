@@ -59,9 +59,11 @@ def _discover_single_account_file(cookies_dir: Path, platform: str, prefix: str)
     if canonical.is_file():
         return canonical
 
-    legacy_files = sorted(cookies_dir.glob(f"{prefix}*.json"))
+    legacy_files = sorted(file for file in cookies_dir.glob(f"{prefix}*.json") if file.is_file())
     if account_dir.exists():
-        legacy_files.extend(sorted(account_dir.glob("*.json")))
+        legacy_files.extend(
+            sorted(file for file in account_dir.glob("*.json") if file.is_file() and file.name != "account.json")
+        )
     return legacy_files[0] if len(legacy_files) == 1 else None
 
 

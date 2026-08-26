@@ -53,6 +53,35 @@ class AccountDiscoveryTests(unittest.TestCase):
         self.assertNotIn("xiaohongshu_account", accounts)
         self.assertNotIn(",", "".join(accounts.values()))
 
+    def test_ignores_archive_json_when_canonical_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            archive = base_dir / "cookies" / "tencent_uploader" / "archive"
+            archive.mkdir(parents=True)
+            (archive / "legacy.json").touch()
+
+            with patch("publish.config.BASE_DIR", base_dir):
+                accounts = _discover_account_files()
+
+        self.assertNotIn("tencent_account", accounts)
+
+    def test_ignores_json_named_directories_when_single_legacy_file_exists(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_dir = Path(tmp_dir)
+            cookies_dir = base_dir / "cookies"
+            cookies_dir.mkdir()
+            (cookies_dir / "bilibili_directory.json").mkdir()
+            uploader_dir = cookies_dir / "bilibili_uploader"
+            uploader_dir.mkdir()
+            (uploader_dir / "nested-directory.json").mkdir()
+            legacy = uploader_dir / "legacy.json"
+            legacy.touch()
+
+            with patch("publish.config.BASE_DIR", base_dir):
+                accounts = _discover_account_files()
+
+        self.assertEqual(accounts, {"bilibili_account": "cookies/bilibili_uploader/legacy.json"})
+
 
 if __name__ == "__main__":
     unittest.main()
