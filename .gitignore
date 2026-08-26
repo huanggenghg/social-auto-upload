@@ -196,5 +196,8 @@ templates/
 # Temporary frame images
 temp_frames/
 
+# Isolated Codex development worktrees
+.worktrees/
+
 # Claude Code local settings (contains secrets)
 .claude/settings.local.json
