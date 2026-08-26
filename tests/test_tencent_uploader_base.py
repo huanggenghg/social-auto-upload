@@ -81,6 +81,13 @@ class TencentVideoUploadTests(unittest.TestCase):
         async def fake_session():
             class FakePage:
                 url = "https://channels.weixin.qq.com/platform/post/create"
+
+                async def goto(self, *args, **kwargs):
+                    self.url = "https://channels.weixin.qq.com/login.html"
+
+                def locator(self, selector):
+                    raise AssertionError(f"login redirect should be detected before querying {selector}")
+
             yield FakePage()
 
         uploader = TencentVideo(
@@ -89,15 +96,71 @@ class TencentVideoUploadTests(unittest.TestCase):
         )
         with patch.object(uploader, "validate_upload_args", AsyncMock()), \
              patch.object(uploader, "_browser_session", return_value=fake_session()), \
-             patch.object(
-                 TencentVideo,
-                 "upload_video_content",
-                 AsyncMock(side_effect=LoginExpiredError("cookie 已失效，请重新扫码登录")),
-             ):
+             patch.object(uploader, "upload_video_file", AsyncMock()) as upload_mock:
             result = asyncio.run(uploader.upload())
 
         self.assertEqual(result["issue_type"], "login_expired")
         self.assertTrue(result["safe_to_retry"])
+        upload_mock.assert_not_called()
+
+    def test_login_expiry_after_file_selection_is_not_safe_to_retry(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        class FakeFileInput:
+            def __init__(self):
+                self.set_input_files = AsyncMock()
+
+        ready_file_input = FakeFileInput()
+        requery_file_input = FakeFileInput()
+
+        class FakeLocator:
+            def __init__(self, count, first=None):
+                self._count = count
+                self.first = first if first is not None else self
+
+            async def count(self):
+                return self._count
+
+        class FakePage:
+            url = "https://channels.weixin.qq.com/platform/post/create"
+            file_input_queries = 0
+
+            async def goto(self, *args, **kwargs):
+                pass
+
+            def locator(self, selector):
+                if selector == 'iframe[src*="qrconnect"]':
+                    return FakeLocator(0)
+                if selector == 'input[type="file"]':
+                    inputs = [ready_file_input, requery_file_input]
+                    file_input = inputs[min(self.file_input_queries, len(inputs) - 1)]
+                    self.file_input_queries += 1
+                    return FakeLocator(1, first=file_input)
+                raise AssertionError(f"unexpected selector: {selector}")
+
+        page = FakePage()
+
+        @asynccontextmanager
+        async def fake_session():
+            yield page
+
+        uploader = TencentVideo(
+            title="t", file_path="/fake.mp4", tags=[], publish_date=0,
+            account_file="/fake.json", desc="", publish_strategy=PublishStrategy.IMMEDIATE,
+        )
+        with patch.object(uploader, "validate_upload_args", AsyncMock()), \
+             patch.object(uploader, "_browser_session", return_value=fake_session()), \
+             patch.object(
+                 uploader,
+                 "prepare_video_for_publish",
+                 AsyncMock(side_effect=LoginExpiredError("登录在文件选择后失效")),
+             ):
+            result = asyncio.run(uploader.upload())
+
+        ready_file_input.set_input_files.assert_awaited_once_with("/fake.mp4")
+        self.assertEqual(page.file_input_queries, 1)
+        self.assertEqual(result, {"success": False, "message": "登录在文件选择后失效"})
 
     def test_upload_keeps_generic_error_unstructured(self):
         import asyncio
@@ -192,6 +255,36 @@ class TencentUploadInputReadinessTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "上传控件") as raised:
             asyncio.run(tencent_main._wait_for_tencent_upload_input(FakePage(), timeout_ms=0))
         self.assertNotIsInstance(raised.exception, LoginExpiredError)
+
+    def test_poll_sleep_is_bounded_by_remaining_deadline(self):
+        import asyncio
+
+        class FakeTime:
+            values = iter([0.0, 0.05, 0.1])
+
+            @classmethod
+            def monotonic(cls):
+                return next(cls.values)
+
+        class FakePage:
+            url = "https://channels.weixin.qq.com/platform/post/create"
+
+            def locator(self, selector):
+                return TencentUploadInputReadinessTests._locator(0)
+
+        with patch.object(tencent_main, "time", FakeTime), \
+             patch.object(tencent_main.asyncio, "sleep", AsyncMock()) as sleep_mock:
+            with self.assertRaises(RuntimeError):
+                asyncio.run(
+                    tencent_main._wait_for_tencent_upload_input(
+                        FakePage(),
+                        timeout_ms=100,
+                        poll_interval_ms=250,
+                    )
+                )
+
+        sleep_mock.assert_awaited_once()
+        self.assertAlmostEqual(sleep_mock.await_args.args[0], 0.05)
 
 
 class TencentCookieGenTests(unittest.TestCase):

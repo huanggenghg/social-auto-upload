@@ -35,6 +35,10 @@ TENCENT_UPLOAD_WAIT_TIMEOUT = 1800
 TENCENT_PUBLISH_WAIT_TIMEOUT = 600
 
 
+class _TencentPreMediaLoginExpired(LoginExpiredError):
+    """Login expiry proven before the initial media selection."""
+
+
 async def _wait_for_tencent_upload_input(
     page: Page,
     timeout_ms: int = 30_000,
@@ -53,10 +57,11 @@ async def _wait_for_tencent_upload_input(
         if await file_input.count():
             return file_input.first
 
-        if time.monotonic() >= deadline:
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
             raise RuntimeError("未找到腾讯视频号上传控件")
 
-        await asyncio.sleep(poll_interval_ms / 1000)
+        await asyncio.sleep(min(poll_interval_ms / 1000, remaining_seconds))
 
 
 def _resolve_account_file(account_file: str | Path) -> str:
@@ -482,12 +487,16 @@ class TencentBaseUploader(BaseBrowserUploader):
         await page.keyboard.type(publish_date.strftime("%H"))
         await page.locator("div.input-editor").click()
 
-    async def open_upload_page(self, page: Page) -> None:
+    async def open_upload_page(self, page: Page):
         await page.goto(TENCENT_UPLOAD_URL)
-        await _wait_for_tencent_upload_input(page)
+        try:
+            return await _wait_for_tencent_upload_input(page)
+        except LoginExpiredError as exc:
+            raise _TencentPreMediaLoginExpired(str(exc)) from exc
 
-    async def upload_video_file(self, page: Page, file_path: str) -> None:
-        file_input = page.locator('input[type="file"]').first
+    async def upload_video_file(self, page: Page, file_path: str, file_input=None) -> None:
+        if file_input is None:
+            file_input = page.locator('input[type="file"]').first
         await file_input.set_input_files(file_path)
 
     async def set_short_title(self, page: Page, title: str, short_title: str | None = None) -> None:
@@ -828,10 +837,10 @@ class TencentVideo(TencentBaseUploader):
 
     async def upload_video_content(self, page: Page) -> None:
         """上传视频内容(页面已通过 _browser_session 打开)。"""
-        await self.open_upload_page(page)
+        file_input = await self.open_upload_page(page)
         tencent_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}"))
 
-        await self.upload_video_file(page, self.file_path)
+        await self.upload_video_file(page, self.file_path, file_input)
         await self.prepare_video_for_publish(page)
         await self.wait_for_upload_complete(page)
         await self.set_thumbnail(page)
@@ -866,7 +875,7 @@ class TencentVideo(TencentBaseUploader):
                 if getattr(self, "_result_url", None):
                     result["result_url"] = self._result_url
             tencent_logger.success(_msg("🥳", "cookie 更新完毕"))
-        except LoginExpiredError as e:
+        except _TencentPreMediaLoginExpired as e:
             result.update(build_login_expired_result(str(e) or "cookie 已失效，请重新扫码登录"))
             tencent_logger.error(_msg("❌", f"上传失败: {e}"))
         except Exception as e:
