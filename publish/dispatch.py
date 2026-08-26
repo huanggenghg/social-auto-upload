@@ -20,7 +20,7 @@ _PLATFORM_LOGIN = {
 }
 
 
-async def ensure_login(platform: str, account_file: str) -> bool:
+async def ensure_login(platform: str, account_file: str, force: bool = False) -> bool:
     """确保平台已登录，未登录则触发登录流程"""
     entry = _PLATFORM_LOGIN.get(platform)
     if entry is None:
@@ -29,7 +29,7 @@ async def ensure_login(platform: str, account_file: str) -> bool:
     module_path, check_name, setup_name = entry
     module = importlib.import_module(module_path)
 
-    if os.path.exists(account_file):
+    if not force and os.path.exists(account_file):
         check_func = getattr(module, check_name)
         if await check_func(account_file):
             return True
@@ -45,9 +45,9 @@ async def ensure_login(platform: str, account_file: str) -> bool:
     return await setup_func(account_file, handle=True)
 
 
-async def ensure_account_login(platform: str, account_file: str) -> bool:
+async def ensure_account_login(platform: str, account_file: str, force: bool = False) -> bool:
     resolved_account = resolve_path(account_file)
-    return await ensure_login(platform, resolved_account)
+    return await ensure_login(platform, resolved_account, force=force)
 
 
 def platform_requires_account_login(platform: str) -> bool:

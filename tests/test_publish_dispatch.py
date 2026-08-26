@@ -60,6 +60,24 @@ class EnsureLoginTests(unittest.TestCase):
         mock_module.cookie_auth.assert_awaited_once()
         mock_module.douyin_setup.assert_not_awaited()
 
+    def test_force_login_skips_cookie_auth_and_runs_setup(self):
+        import asyncio
+        with patch("os.path.exists", return_value=True), \
+             patch("importlib.import_module") as mock_import:
+            mock_module = mock_import.return_value
+            mock_module.cookie_auth = AsyncMock(return_value=True)
+            mock_module.douyin_setup = AsyncMock(return_value=True)
+            result = asyncio.run(
+                ensure_login(
+                    "douyin", "cookies/douyin_uploader/account.json", force=True
+                )
+            )
+        self.assertTrue(result)
+        mock_module.cookie_auth.assert_not_awaited()
+        mock_module.douyin_setup.assert_awaited_once_with(
+            "cookies/douyin_uploader/account.json", handle=True
+        )
+
     def test_falls_through_to_setup_when_cookie_invalid(self):
         import asyncio
         with patch("os.path.exists", return_value=True), \
