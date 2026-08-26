@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from uploader.base_video import BaseBrowserUploader, PublishStrategy
+from uploader.base_video import BaseBrowserUploader, LoginExpiredError, PublishStrategy
 from uploader.weibo_uploader.main import WeiboBaseUploader, WeiboVideo, WeiboNote, cookie_auth, weibo_setup
 
 
@@ -47,6 +47,66 @@ class WeiboVideoUploadTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["result_url"], "https://weibo.com/v/123")
 
+    def test_upload_maps_pre_media_login_expiry_to_safe_retry_result(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        class FakePage:
+            url = "https://weibo.com/upload/channel"
+
+            async def goto(self, *args, **kwargs):
+                self.url = "https://weibo.com/newlogin?retcode=6102"
+
+            def locator(self, selector):
+                raise AssertionError(f"login redirect should be detected before querying {selector}")
+
+            async def wait_for_timeout(self, ms):
+                pass
+
+        @asynccontextmanager
+        async def fake_session():
+            yield FakePage()
+
+        uploader = WeiboVideo(
+            title="t", file_path="/fake.mp4", tags=[], publish_date=0,
+            account_file="/fake.json", desc="", publish_strategy=PublishStrategy.IMMEDIATE,
+        )
+        with patch.object(uploader, "validate_upload_args", AsyncMock()), \
+             patch.object(uploader, "_browser_session", return_value=fake_session()):
+            result = asyncio.run(uploader.upload())
+
+        self.assertEqual(result["issue_type"], "login_expired")
+        self.assertTrue(result["safe_to_retry"])
+
+    def test_login_expiry_after_media_selection_is_not_safe_to_retry(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        class FakeFileChooser:
+            set_files = AsyncMock()
+
+        file_chooser = FakeFileChooser()
+
+        async def fail_after_media_selection(page):
+            await file_chooser.set_files("/fake.mp4")
+            raise LoginExpiredError("登录在文件选择后失效")
+
+        @asynccontextmanager
+        async def fake_session():
+            yield object()
+
+        uploader = WeiboVideo(
+            title="t", file_path="/fake.mp4", tags=[], publish_date=0,
+            account_file="/fake.json", desc="", publish_strategy=PublishStrategy.IMMEDIATE,
+        )
+        with patch.object(uploader, "validate_upload_args", AsyncMock()), \
+             patch.object(uploader, "_browser_session", return_value=fake_session()), \
+             patch.object(uploader, "upload_video_content", side_effect=fail_after_media_selection):
+            result = asyncio.run(uploader.upload())
+
+        file_chooser.set_files.assert_awaited_once_with("/fake.mp4")
+        self.assertEqual(result, {"success": False, "message": "登录在文件选择后失效"})
+
 
 class WeiboNoteUploadTests(unittest.TestCase):
     def test_upload_returns_platform_result_extras(self):
@@ -70,6 +130,37 @@ class WeiboNoteUploadTests(unittest.TestCase):
             result = asyncio.run(uploader.upload())
         self.assertTrue(result["success"])
         self.assertEqual(result["message"], "发布成功")
+
+    def test_upload_maps_pre_media_login_expiry_to_safe_retry_result(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        class FakePage:
+            url = "https://weibo.com/"
+
+            async def goto(self, *args, **kwargs):
+                self.url = "https://weibo.com/newlogin?retcode=6102"
+
+            def locator(self, selector):
+                raise AssertionError(f"login redirect should be detected before querying {selector}")
+
+            async def wait_for_timeout(self, ms):
+                pass
+
+        @asynccontextmanager
+        async def fake_session():
+            yield FakePage()
+
+        uploader = WeiboNote(
+            image_paths=["/fake.jpg"], note="test note", tags=[],
+            publish_date=0, account_file="/fake.json",
+        )
+        with patch.object(uploader, "validate_upload_args", AsyncMock()), \
+             patch.object(uploader, "_browser_session", return_value=fake_session()):
+            result = asyncio.run(uploader.upload())
+
+        self.assertEqual(result["issue_type"], "login_expired")
+        self.assertTrue(result["safe_to_retry"])
 
 
 class WeiboLogTimingTests(unittest.TestCase):

@@ -2,16 +2,19 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
-from patchright.async_api import Page
+from patchright.async_api import Page, async_playwright
 
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS
 from uploader.base_video import (
     BaseBrowserUploader,
+    LoginExpiredError,
     PlatformResultExtras,
     PublishStrategy,
+    build_login_expired_result,
     _msg,
 )
 from utils.log import weibo_logger
@@ -19,7 +22,7 @@ from utils.log import weibo_logger
 WEIBO_MAIN_URL = "https://weibo.com/"  # 微博主站，发布入口在首页
 WEIBO_LOGIN_URL = "https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&disp=popup&url=https%3A%2F%2Fweibo.com%2Fu%2F6569482075&from=weibopro"  # 登录页面
 WEIBO_UPLOAD_CHANNEL_URL = "https://weibo.com/upload/channel"  # 视频上传页面
-WEIBO_LOGIN_URL_MARKERS = ("passport.weibo.com", "login.sina.com", "/login", "/sso/", "newlogin")
+WEIBO_LOGIN_URL_MARKERS = ("newlogin", "passport", "login.sina", "/login", "/sso/")
 WEIBO_UPLOAD_BUTTON_SELECTOR = 'button[id^="video_button_upload"], button._btn1_109u9_8'
 WEIBO_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 WEIBO_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
@@ -45,20 +48,74 @@ async def _is_visible(locator) -> bool:
         return False
 
 
-async def _is_weibo_auth_page_valid(page: Page) -> bool:
-    """只有进入发布页并看到上传入口，才认为微博 cookie 仍然有效。"""
+class _WeiboPreMediaLoginExpired(LoginExpiredError):
+    """Login expiry proven before the initial media selection."""
+
+
+async def _is_weibo_login_page(page: Page) -> bool:
     current_url = (page.url or "").lower()
     if any(marker in current_url for marker in WEIBO_LOGIN_URL_MARKERS):
-        return False
+        return True
 
-    login_markers = [
-        page.locator('text="登录"').first,
-        page.locator('text="扫码登录"').first,
-        page.locator('a[href*="login"]').first,
-    ]
-    for marker in login_markers:
-        if await _is_visible(marker):
-            return False
+    for selector in ('text="登录"', 'text="扫码登录"', 'a[href*="login"]'):
+        if await _is_visible(page.locator(selector).first):
+            return True
+
+    return False
+
+
+async def _wait_for_weibo_upload_button(
+    page: Page,
+    timeout_ms: int = 15_000,
+    poll_interval_ms: int = 250,
+):
+    """Wait for the video entry while explicitly detecting a login redirect."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        if await _is_weibo_login_page(page):
+            raise LoginExpiredError("cookie 已失效，请重新扫码登录")
+
+        upload_button = page.locator(WEIBO_UPLOAD_BUTTON_SELECTOR).first
+        if await _is_visible(upload_button):
+            return upload_button
+
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise RuntimeError("未找到视频上传入口")
+        await page.wait_for_timeout(
+            max(1, int(min(poll_interval_ms / 1000, remaining_seconds) * 1000))
+        )
+
+
+async def _wait_for_weibo_image_input(
+    page: Page,
+    selectors,
+    timeout_ms: int = 15_000,
+    poll_interval_ms: int = 250,
+):
+    """Wait for an image input while explicitly detecting a login redirect."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        if await _is_weibo_login_page(page):
+            raise LoginExpiredError("cookie 已失效，请重新扫码登录")
+
+        for selector in selectors:
+            image_input = page.locator(selector)
+            if await image_input.count():
+                return image_input.first
+
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise RuntimeError("未找到图片上传入口")
+        await page.wait_for_timeout(
+            max(1, int(min(poll_interval_ms / 1000, remaining_seconds) * 1000))
+        )
+
+
+async def _is_weibo_auth_page_valid(page: Page) -> bool:
+    """只有进入发布页并看到上传入口，才认为微博 cookie 仍然有效。"""
+    if await _is_weibo_login_page(page):
+        return False
 
     upload_button = page.locator(WEIBO_UPLOAD_BUTTON_SELECTOR).first
     return await _is_visible(upload_button)
@@ -144,6 +201,26 @@ class WeiboBaseUploader(BaseBrowserUploader):
     @classmethod
     async def is_login_completed(cls, page):
         return await _is_weibo_login_completed(page)
+
+    @classmethod
+    async def cookie_auth(cls, account_file: str) -> bool:
+        """Validate persisted state against Weibo's actual video upload entry."""
+        if not os.path.exists(account_file):
+            return False
+
+        async with async_playwright() as playwright:
+            browser = await cls._launch_browser(playwright, headless=LOCAL_CHROME_HEADLESS)
+            try:
+                context = await cls._init_context(browser, account_file)
+                page = await context.new_page()
+                await page.goto(WEIBO_UPLOAD_CHANNEL_URL)
+                try:
+                    await _wait_for_weibo_upload_button(page)
+                except LoginExpiredError:
+                    return False
+                return True
+            finally:
+                await browser.close()
 
     async def validate_login_and_strategy(self):
         """Renamed from `validate_base_args(self)` to avoid collision with
@@ -251,12 +328,13 @@ class WeiboVideo(WeiboBaseUploader):
         weibo_logger.info(_msg("🧭", "正在访问微博视频上传页面..."))
 
         await page.goto(WEIBO_UPLOAD_CHANNEL_URL)
-        await page.wait_for_timeout(3000)
 
         # 点击"上传视频"按钮触发 file chooser
         weibo_logger.info(_msg("🔍", "查找上传视频按钮..."))
-        upload_btn = page.locator('button[id^="video_button_upload"], button._btn1_109u9_8').first
-        await upload_btn.wait_for(state="visible", timeout=10000)
+        try:
+            upload_btn = await _wait_for_weibo_upload_button(page)
+        except LoginExpiredError as exc:
+            raise _WeiboPreMediaLoginExpired(str(exc)) from exc
 
         # 通过 file_chooser 方式选择文件
         async with page.expect_file_chooser(timeout=30000) as fc_info:
@@ -514,12 +592,14 @@ class WeiboVideo(WeiboBaseUploader):
     async def upload(self) -> PlatformResultExtras:
         """主入口，返回 PlatformResultExtras"""
         weibo_logger.info(_msg("🧍", "检查 cookie 和视频文件..."))
-        await self.validate_upload_args()
-        weibo_logger.info(_msg("🥳", "上传前检查通过"))
-
         result: PlatformResultExtras = {"success": False, "message": ""}
 
         try:
+            try:
+                await self.validate_upload_args()
+            except LoginExpiredError as exc:
+                raise _WeiboPreMediaLoginExpired(str(exc)) from exc
+            weibo_logger.info(_msg("🥳", "上传前检查通过"))
             async with self._browser_session(save_on_success_only=True) as page:
                 video_link = await self.upload_video_content(page)
                 result["success"] = True
@@ -529,6 +609,9 @@ class WeiboVideo(WeiboBaseUploader):
                 else:
                     result["message"] = "发布成功，但未获取到视频链接"
             weibo_logger.success(_msg("🥳", "cookie 更新完毕"))
+        except _WeiboPreMediaLoginExpired as e:
+            result.update(build_login_expired_result(str(e) or "cookie 已失效，请重新扫码登录"))
+            weibo_logger.error(_msg("❌", f"上传失败: {e}"))
         except Exception as e:
             result["message"] = str(e)
             weibo_logger.error(_msg("❌", f"上传失败: {e}"))
@@ -582,7 +665,6 @@ class WeiboNote(WeiboBaseUploader):
         weibo_logger.info(_msg("🧭", "正在访问微博创作者中心..."))
 
         await page.goto(WEIBO_MAIN_URL)
-        await page.wait_for_timeout(2000)
 
         # 查找图片上传入口
         image_upload_selectors = [
@@ -591,14 +673,10 @@ class WeiboNote(WeiboBaseUploader):
             'input[type="file"][accept*=".png"]',
         ]
 
-        upload_input = None
-        for selector in image_upload_selectors:
-            if await page.locator(selector).count():
-                upload_input = page.locator(selector).first
-                break
-
-        if not upload_input:
-            raise RuntimeError("未找到图片上传入口")
+        try:
+            upload_input = await _wait_for_weibo_image_input(page, image_upload_selectors)
+        except LoginExpiredError as exc:
+            raise _WeiboPreMediaLoginExpired(str(exc)) from exc
 
         # 上传图片
         await upload_input.set_input_files(self.image_paths)
@@ -638,17 +716,22 @@ class WeiboNote(WeiboBaseUploader):
     async def upload(self) -> PlatformResultExtras:
         """主入口，返回 PlatformResultExtras"""
         weibo_logger.info(_msg("🧍", "检查 cookie 和图片文件..."))
-        await self.validate_upload_args()
-        weibo_logger.info(_msg("🥳", "上传前检查通过"))
-
         result: PlatformResultExtras = {"success": False, "message": ""}
 
         try:
+            try:
+                await self.validate_upload_args()
+            except LoginExpiredError as exc:
+                raise _WeiboPreMediaLoginExpired(str(exc)) from exc
+            weibo_logger.info(_msg("🥳", "上传前检查通过"))
             async with self._browser_session(save_on_success_only=True) as page:
                 await self.upload_note_content(page)
                 result["success"] = True
                 result["message"] = "发布成功"
             weibo_logger.success(_msg("🥳", "cookie 更新完毕"))
+        except _WeiboPreMediaLoginExpired as e:
+            result.update(build_login_expired_result(str(e) or "cookie 已失效，请重新扫码登录"))
+            weibo_logger.error(_msg("❌", f"上传失败: {e}"))
         except Exception as e:
             result["message"] = str(e)
             weibo_logger.error(_msg("❌", f"上传失败: {e}"))
