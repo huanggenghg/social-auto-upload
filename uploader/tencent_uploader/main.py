@@ -15,9 +15,11 @@ from patchright.async_api import async_playwright
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS
 from uploader.base_video import (
     BaseBrowserUploader,
+    LoginExpiredError,
     PlatformResultExtras,
     _build_launch_kwargs,
     _build_login_result,
+    build_login_expired_result,
     _emit_qrcode_callback,
     _get_qrcode_utils,
     _msg,
@@ -31,6 +33,30 @@ TENCENT_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 TENCENT_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
 TENCENT_UPLOAD_WAIT_TIMEOUT = 1800
 TENCENT_PUBLISH_WAIT_TIMEOUT = 600
+
+
+async def _wait_for_tencent_upload_input(
+    page: Page,
+    timeout_ms: int = 30_000,
+    poll_interval_ms: int = 250,
+):
+    """Wait for the upload input while detecting a redirected login page first."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        if "login.html" in (page.url or "").lower():
+            raise LoginExpiredError("cookie 已失效，请重新扫码登录")
+
+        if await page.locator('iframe[src*="qrconnect"]').count():
+            raise LoginExpiredError("cookie 已失效，请重新扫码登录")
+
+        file_input = page.locator('input[type="file"]')
+        if await file_input.count():
+            return file_input.first
+
+        if time.monotonic() >= deadline:
+            raise RuntimeError("未找到腾讯视频号上传控件")
+
+        await asyncio.sleep(poll_interval_ms / 1000)
 
 
 def _resolve_account_file(account_file: str | Path) -> str:
@@ -458,12 +484,10 @@ class TencentBaseUploader(BaseBrowserUploader):
 
     async def open_upload_page(self, page: Page) -> None:
         await page.goto(TENCENT_UPLOAD_URL)
-        if "login.html" in (page.url or "").lower():
-            raise RuntimeError("cookie 已失效(被重定向到登录页),请重新扫码登录微信视频号")
-        await page.wait_for_url(TENCENT_UPLOAD_URL)
+        await _wait_for_tencent_upload_input(page)
 
     async def upload_video_file(self, page: Page, file_path: str) -> None:
-        file_input = page.locator('input[type="file"]')
+        file_input = page.locator('input[type="file"]').first
         await file_input.set_input_files(file_path)
 
     async def set_short_title(self, page: Page, title: str, short_title: str | None = None) -> None:
@@ -842,6 +866,9 @@ class TencentVideo(TencentBaseUploader):
                 if getattr(self, "_result_url", None):
                     result["result_url"] = self._result_url
             tencent_logger.success(_msg("🥳", "cookie 更新完毕"))
+        except LoginExpiredError as e:
+            result.update(build_login_expired_result(str(e) or "cookie 已失效，请重新扫码登录"))
+            tencent_logger.error(_msg("❌", f"上传失败: {e}"))
         except Exception as e:
             result["message"] = str(e)
             tencent_logger.error(_msg("❌", f"上传失败: {e}"))

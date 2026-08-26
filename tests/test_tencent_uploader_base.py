@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from uploader.base_video import BaseBrowserUploader, PublishStrategy
+from uploader.base_video import BaseBrowserUploader, LoginExpiredError, PublishStrategy
+from uploader.tencent_uploader import main as tencent_main
 from uploader.tencent_uploader.main import TencentBaseUploader, TencentVideo, cookie_auth, tencent_setup
 
 
@@ -71,6 +72,126 @@ class TencentVideoUploadTests(unittest.TestCase):
             captured_kwargs.get("save_state", True),
             f"upload() 应该传 save_state=False 防止 cookie 文件被覆盖,实际收到: {captured_kwargs}",
         )
+
+    def test_upload_maps_pre_media_login_expiry_to_safe_retry_result(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_session():
+            class FakePage:
+                url = "https://channels.weixin.qq.com/platform/post/create"
+            yield FakePage()
+
+        uploader = TencentVideo(
+            title="t", file_path="/fake.mp4", tags=[], publish_date=0,
+            account_file="/fake.json", desc="", publish_strategy=PublishStrategy.IMMEDIATE,
+        )
+        with patch.object(uploader, "validate_upload_args", AsyncMock()), \
+             patch.object(uploader, "_browser_session", return_value=fake_session()), \
+             patch.object(
+                 TencentVideo,
+                 "upload_video_content",
+                 AsyncMock(side_effect=LoginExpiredError("cookie 已失效，请重新扫码登录")),
+             ):
+            result = asyncio.run(uploader.upload())
+
+        self.assertEqual(result["issue_type"], "login_expired")
+        self.assertTrue(result["safe_to_retry"])
+
+    def test_upload_keeps_generic_error_unstructured(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_session():
+            class FakePage:
+                url = "https://channels.weixin.qq.com/platform/post/create"
+            yield FakePage()
+
+        uploader = TencentVideo(
+            title="t", file_path="/fake.mp4", tags=[], publish_date=0,
+            account_file="/fake.json", desc="", publish_strategy=PublishStrategy.IMMEDIATE,
+        )
+        with patch.object(uploader, "validate_upload_args", AsyncMock()), \
+             patch.object(uploader, "_browser_session", return_value=fake_session()), \
+             patch.object(TencentVideo, "upload_video_content", AsyncMock(side_effect=RuntimeError("上传失败"))):
+            result = asyncio.run(uploader.upload())
+
+        self.assertEqual(result, {"success": False, "message": "上传失败"})
+
+
+class TencentUploadInputReadinessTests(unittest.TestCase):
+    @staticmethod
+    def _locator(count, first=None):
+        class FakeLocator:
+            async def count(self):
+                return count
+
+        locator = FakeLocator()
+        locator.first = first if first is not None else locator
+        return locator
+
+    def test_login_html_redirect_raises_login_expired(self):
+        import asyncio
+
+        class FakePage:
+            url = "https://channels.weixin.qq.com/login.html"
+
+            def locator(self, selector):
+                raise AssertionError(f"login.html should be detected before querying {selector}")
+
+        self.assertTrue(hasattr(tencent_main, "_wait_for_tencent_upload_input"))
+        with self.assertRaisesRegex(LoginExpiredError, "cookie 已失效，请重新扫码登录"):
+            asyncio.run(tencent_main._wait_for_tencent_upload_input(FakePage(), timeout_ms=0))
+
+    def test_qrconnect_iframe_raises_login_expired(self):
+        import asyncio
+
+        class FakePage:
+            url = "https://channels.weixin.qq.com/platform/post/create"
+
+            def locator(self, selector):
+                if selector == 'iframe[src*="qrconnect"]':
+                    return TencentUploadInputReadinessTests._locator(1)
+                raise AssertionError(f"qrconnect should be detected before querying {selector}")
+
+        self.assertTrue(hasattr(tencent_main, "_wait_for_tencent_upload_input"))
+        with self.assertRaisesRegex(LoginExpiredError, "cookie 已失效，请重新扫码登录"):
+            asyncio.run(tencent_main._wait_for_tencent_upload_input(FakePage(), timeout_ms=0))
+
+    def test_returns_first_upload_file_input(self):
+        import asyncio
+
+        file_input = object()
+
+        class FakePage:
+            url = "https://channels.weixin.qq.com/platform/post/create"
+
+            def locator(self, selector):
+                if selector == 'iframe[src*="qrconnect"]':
+                    return TencentUploadInputReadinessTests._locator(0)
+                if selector == 'input[type="file"]':
+                    return TencentUploadInputReadinessTests._locator(1, first=file_input)
+                raise AssertionError(f"unexpected selector: {selector}")
+
+        self.assertTrue(hasattr(tencent_main, "_wait_for_tencent_upload_input"))
+        result = asyncio.run(tencent_main._wait_for_tencent_upload_input(FakePage(), timeout_ms=0))
+        self.assertIs(result, file_input)
+
+    def test_neutral_timeout_is_runtime_error_not_login_expired(self):
+        import asyncio
+
+        class FakePage:
+            url = "https://channels.weixin.qq.com/platform/post/create"
+
+            def locator(self, selector):
+                return TencentUploadInputReadinessTests._locator(0)
+
+        self.assertTrue(hasattr(tencent_main, "_wait_for_tencent_upload_input"))
+        with self.assertRaisesRegex(RuntimeError, "上传控件") as raised:
+            asyncio.run(tencent_main._wait_for_tencent_upload_input(FakePage(), timeout_ms=0))
+        self.assertNotIsInstance(raised.exception, LoginExpiredError)
 
 
 class TencentCookieGenTests(unittest.TestCase):
