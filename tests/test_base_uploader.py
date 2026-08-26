@@ -10,6 +10,7 @@ from uploader.base_video import (
     BaseBrowserUploader,
     BaseCliUploader,
     BasePlatformUploader,
+    build_login_expired_result,
     PlatformResult,
     PlatformResultExtras,
     PublishStrategy,
@@ -53,6 +54,20 @@ class AccountRestrictedErrorTests(unittest.TestCase):
     def test_carries_message(self):
         exc = AccountRestrictedError("风控限制")
         self.assertEqual(str(exc), "风控限制")
+
+
+class LoginExpiredResultTests(unittest.TestCase):
+    def test_builds_exact_default_safe_retry_result(self):
+        self.assertEqual(
+            build_login_expired_result(),
+            {
+                "success": False,
+                "message": "cookie 已失效，请重新扫码登录",
+                "account_issue": True,
+                "issue_type": "login_expired",
+                "safe_to_retry": True,
+            },
+        )
 
 
 class ValidateBaseArgsTests(unittest.TestCase):

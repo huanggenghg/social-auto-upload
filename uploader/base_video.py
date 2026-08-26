@@ -29,10 +29,27 @@ class PlatformResultExtras(PlatformResult, total=False):
     result_id: str
     account_issue: bool
     issue_type: str
+    safe_to_retry: bool
 
 
 class AccountRestrictedError(Exception):
     """平台限制发布(风控/限流/封禁)。upload() 捕获后映射为 account_issue=True。"""
+
+
+class LoginExpiredError(RuntimeError):
+    """登录在选择或提交媒体前失效，可由编排器安全恢复一次。"""
+
+
+def build_login_expired_result(
+    message: str = "cookie 已失效，请重新扫码登录",
+) -> PlatformResultExtras:
+    return {
+        "success": False,
+        "message": message,
+        "account_issue": True,
+        "issue_type": "login_expired",
+        "safe_to_retry": True,
+    }
 
 
 class BasePlatformUploader:
