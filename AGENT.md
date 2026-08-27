@@ -79,6 +79,8 @@ content, asset paths, tags, scheduling) as command-line arguments. Account
 files are auto-discovered from the `cookies/` directory under the data
 directory.
 
+每个平台只自动发现一个规范账号文件；未发现账号时，发布流程会引导扫码并写入对应上传器目录的 `account.json`。
+
 ## 快速开始
 
 执行统一发布入口（全部发布信息通过命令行参数传入）：

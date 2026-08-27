@@ -219,5 +219,21 @@ class SkillDocBlackboxTests(unittest.TestCase):
         self.assertIn("仅当用户明确", text, "自动生成只允许在用户明确授权时使用")
 
 
+class PublicSingleAccountContractTests(unittest.TestCase):
+    DOC_PATHS = [
+        Path("README.md"),
+        Path("AGENT.md"),
+        Path("skills/opub-cli/SKILL.md"),
+    ]
+
+    def test_docs_document_one_canonical_account_per_platform(self):
+        for path in self.DOC_PATHS:
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("每个平台只自动发现一个规范账号文件", text)
+                self.assertNotIn("微博多账号", text)
+                self.assertNotIn("每个账号各发一遍", text)
+
+
 if __name__ == "__main__":
     unittest.main()

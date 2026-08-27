@@ -15,7 +15,7 @@
 | `bilibili` | B站 | ✅ | ❌ | ✅ | 运行时自动准备 `biliup`，自动抓取BV号 |
 | `tencent` | 视频号 | ✅ | ❌ | ✅ | 分享短链通过 API 自动抓取 |
 | `baijiahao` | 百家号 | ✅ | ❌ | ✅ | 浏览器自动化 |
-| `weibo` | 微博 | ✅ | ❌ | ✅ | 支持逗号分隔多账号，每个账号各发一遍 |
+| `weibo` | 微博 | ✅ | ❌ | ✅ | 单账号自动发现 |
 
 所有平台通过统一入口 `opub` 调用，自动完成运行环境预检、账号登录校验、发布和结果汇总。
 
@@ -40,7 +40,7 @@ PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST="https://cdn.playwright.dev" patchright instal
 
 ## 快速开始
 
-`opub` 是无状态命令,全部配置通过命令行参数传入,账号文件从 `cookies/` 目录自动发现。
+`opub` 是无状态命令,全部配置通过命令行参数传入。每个平台只自动发现一个规范账号文件；未发现账号时，发布流程会引导扫码并写入对应上传器目录的 `account.json`。
 
 ```bash
 # 视频发布(必填:--platforms + --video)
