@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import publish_all
 from conf import BASE_DIR
+from publish import orchestrator
 from publish.errors import EXIT_CONFIG_ERROR
 
 
@@ -423,6 +424,22 @@ class AccountLoginFlowTests(unittest.TestCase):
         self.assertEqual(set(results), {"weibo"})
         self.assertNotIn("账号 1/", stdout.getvalue())
 
+    def test_duplicate_enabled_platform_publishes_once_with_unique_header_total(self):
+        params = self._weibo_params()
+        params["enabled_platforms"] = ["weibo", "weibo"]
+
+        with patch("publish.orchestrator.ensure_account_login", new=AsyncMock(return_value=True)) as ensure_login, \
+             patch("publish.orchestrator.publish_to_platform", new=AsyncMock(return_value={"success": True, "message": "发布成功"})) as publish, \
+             contextlib.redirect_stdout(io.StringIO()) as stdout:
+            results = publish_all.run_async_for_test(publish_all.publish_one_item(params))
+
+        ensure_login.assert_awaited_once_with("weibo", "cookies/weibo.json")
+        publish.assert_awaited_once()
+        self.assertEqual(set(results), {"weibo"})
+        self.assertIn("启用平台: weibo", stdout.getvalue())
+        self.assertIn("[1/1] 发布到 微博", stdout.getvalue())
+        self.assertNotIn("[2/2]", stdout.getvalue())
+
     def test_safe_login_expiry_forces_one_login_and_republishes_successfully(self):
         params = self._weibo_params()
         first_result = {
@@ -457,7 +474,8 @@ class AccountLoginFlowTests(unittest.TestCase):
         }
 
         with patch("publish.orchestrator.ensure_account_login", new=AsyncMock(side_effect=[True, False])) as ensure_login, \
-             patch("publish.orchestrator.publish_to_platform", new=AsyncMock(return_value=expiry)) as publish:
+             patch("publish.orchestrator.publish_to_platform", new=AsyncMock(return_value=expiry)) as publish, \
+             contextlib.redirect_stdout(io.StringIO()) as stdout:
             results = publish_all.run_async_for_test(publish_all.publish_one_item(params))
 
         self.assertEqual(ensure_login.await_count, 2)
@@ -465,6 +483,7 @@ class AccountLoginFlowTests(unittest.TestCase):
         publish.assert_awaited_once()
         self.assertFalse(results["weibo"]["success"])
         self.assertEqual(results["weibo"]["error_code"], "AUTH-001")
+        self.assertNotIn("❌ 失败: 登录失败: 微博", stdout.getvalue())
 
     def test_second_safe_login_expiry_does_not_trigger_a_third_publish_or_login(self):
         params = self._weibo_params()
@@ -502,27 +521,15 @@ class AccountLoginFlowTests(unittest.TestCase):
         publish.assert_awaited_once()
         self.assertEqual(results["weibo"], expiry)
 
-    def test_non_boolean_unsuccessful_result_does_not_force_login(self):
-        for success_value in (None, unittest.mock.sentinel.missing):
-            with self.subTest(success_value=success_value):
-                params = self._weibo_params()
-                expiry = {
-                    "message": "登录已过期",
-                    "account_issue": True,
-                    "issue_type": "login_expired",
-                    "safe_to_retry": True,
-                }
-                if success_value is not unittest.mock.sentinel.missing:
-                    expiry["success"] = success_value
+    def test_safe_login_expiry_requires_explicit_false_success(self):
+        common_fields = {
+            "account_issue": True,
+            "issue_type": "login_expired",
+            "safe_to_retry": True,
+        }
 
-                with patch("publish.orchestrator.ensure_account_login", new=AsyncMock(return_value=True)) as ensure_login, \
-                     patch("publish.orchestrator.publish_to_platform", new=AsyncMock(return_value=expiry)) as publish, \
-                     patch("publish.orchestrator.print_results"):
-                    results = publish_all.run_async_for_test(publish_all.publish_one_item(params))
-
-                ensure_login.assert_awaited_once_with("weibo", "cookies/weibo.json")
-                publish.assert_awaited_once()
-                self.assertEqual(results["weibo"], expiry)
+        self.assertFalse(orchestrator._is_safe_login_expiry(common_fields))
+        self.assertFalse(orchestrator._is_safe_login_expiry({**common_fields, "success": None}))
 
     def test_publish_one_item_triggers_login_before_publish(self):
         params = {
@@ -595,7 +602,7 @@ class AccountLoginFlowTests(unittest.TestCase):
     def test_publish_one_item_skips_login_for_unsupported_platforms(self):
         params = {
             "enabled_platforms": ["fake_platform"],
-            "platforms": {"fake_platform_account": "cookies/fake.json"},
+            "platforms": {},
             "content_type": "video",
             "video_file": "videos/demo.mp4",
             "title": "标题",
@@ -606,12 +613,16 @@ class AccountLoginFlowTests(unittest.TestCase):
             "convert_to_video": False,
         }
 
-        with patch("publish.orchestrator.ensure_account_login", new=AsyncMock()) as ensure_login:
+        with patch("publish.orchestrator.ensure_account_login", new=AsyncMock()) as ensure_login, \
+             patch("publish.orchestrator.default_account_file") as default_account, \
+             patch("publish.orchestrator.publish_to_platform", new=AsyncMock()) as publish:
             results = publish_all.run_async_for_test(publish_all.publish_one_item(params))
 
         ensure_login.assert_not_awaited()
+        default_account.assert_not_called()
+        publish.assert_not_awaited()
         self.assertFalse(results["fake_platform"]["success"])
-        self.assertIn("未知平台", results["fake_platform"]["message"])
+        self.assertEqual(results["fake_platform"]["message"], "未知平台: fake_platform")
 
 
 class EnsureLoginWarningTests(unittest.TestCase):

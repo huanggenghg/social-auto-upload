@@ -69,13 +69,24 @@ def _is_safe_login_expiry(result: Dict[str, Any]) -> bool:
 
 
 async def publish_one_item(video_params: Dict[str, Any]) -> Dict[str, Any]:
+    enabled_platforms = list(dict.fromkeys(video_params["enabled_platforms"]))
+    if enabled_platforms != video_params["enabled_platforms"]:
+        video_params = {**video_params, "enabled_platforms": enabled_platforms}
+
     print_header(video_params)
 
     results = {}
-    total = len(video_params["enabled_platforms"])
+    total = len(enabled_platforms)
 
-    for i, platform in enumerate(video_params["enabled_platforms"], 1):
+    for i, platform in enumerate(enabled_platforms, 1):
         platform_name = PLATFORM_NAMES.get(platform, platform)
+
+        if platform not in PLATFORM_NAMES:
+            result = {"success": False, "message": f"未知平台: {platform}"}
+            results[platform] = result
+            print(f"[{i}/{total}] 发布到 {platform_name}...")
+            print(f"  ❌ 失败: {result['message']}")
+            continue
 
         account_key = f"{platform}_account"
         account_file = str(video_params["platforms"].get(account_key, "") or "").strip()
@@ -116,6 +127,7 @@ async def publish_one_item(video_params: Dict[str, Any]) -> Dict[str, Any]:
                 continue
 
         result = await publish_to_platform(platform, platform_params)
+        auth_failure_reported = False
         if _is_safe_login_expiry(result):
             login_error = None
             try:
@@ -128,8 +140,11 @@ async def publish_one_item(video_params: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 result = _auth_failure(platform_name, login_error)
                 print_error("AUTH-001", result["message"], f"引导用户在弹出的浏览器中完成 {platform_name} 扫码登录后重试")
+                auth_failure_reported = True
 
         results[platform] = result
+        if auth_failure_reported:
+            continue
         if result.get("success"):
             print("  ✅ 成功")
         else:
