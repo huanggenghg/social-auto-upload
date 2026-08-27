@@ -1180,7 +1180,7 @@ Run:
 import unittest
 
 excluded = {
-    "tests.test_baijiahao_uploader_base.BaiJiaHaoWaitTimeoutTests.test_uploading_video_raises_on_timeout",
+    "test_baijiahao_uploader_base.BaiJiaHaoWaitTimeoutTests.test_uploading_video_raises_on_timeout",
 }
 
 def flatten(suite):
