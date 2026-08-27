@@ -229,7 +229,7 @@ class WeiboBaseUploader(BaseBrowserUploader):
         if not os.path.exists(self.account_file):
             raise RuntimeError(f"cookie文件不存在，请先完成微博登录: {self.account_file}")
         if not await cookie_auth(self.account_file):
-            raise RuntimeError(f"cookie文件已失效，请先完成微博登录: {self.account_file}")
+            raise LoginExpiredError("cookie 已失效，请重新扫码登录")
 
         if self.publish_strategy not in {PublishStrategy.IMMEDIATE, PublishStrategy.SCHEDULED}:
             raise ValueError(f"不支持的发布策略: {self.publish_strategy}")
@@ -336,12 +336,18 @@ class WeiboVideo(WeiboBaseUploader):
         except LoginExpiredError as exc:
             raise _WeiboPreMediaLoginExpired(str(exc)) from exc
 
-        # 通过 file_chooser 方式选择文件
-        async with page.expect_file_chooser(timeout=30000) as fc_info:
-            await upload_btn.click()
-            weibo_logger.info(_msg("✅", "已点击上传视频按钮"))
+        # 在首次选择媒体前，页面跳转到登录页可安全判定为 cookie 失效。
+        try:
+            async with page.expect_file_chooser(timeout=30000) as fc_info:
+                await upload_btn.click()
+                weibo_logger.info(_msg("✅", "已点击上传视频按钮"))
 
-        file_chooser = await fc_info.value
+            file_chooser = await fc_info.value
+        except Exception as exc:
+            if await _is_weibo_login_page(page):
+                raise _WeiboPreMediaLoginExpired("cookie 已失效，请重新扫码登录") from exc
+            raise
+
         await file_chooser.set_files(self.file_path)
         weibo_logger.info(_msg("📤", "视频文件已选择，开始上传..."))
 

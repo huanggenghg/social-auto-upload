@@ -25,6 +25,21 @@ class WeiboBaseUploaderInheritanceTests(unittest.TestCase):
 
 
 class WeiboVideoUploadTests(unittest.TestCase):
+    def test_upload_maps_validation_cookie_auth_failure_to_safe_retry_result(self):
+        import asyncio
+
+        uploader = WeiboVideo(
+            title="t", file_path="/fake.mp4", tags=[], publish_date=0,
+            account_file="/fake.json", desc="", publish_strategy=PublishStrategy.IMMEDIATE,
+        )
+        with patch("uploader.weibo_uploader.main.os.path.exists", return_value=True), \
+             patch("uploader.weibo_uploader.main.cookie_auth", AsyncMock(return_value=False)):
+            result = asyncio.run(uploader.upload())
+
+        self.assertEqual(result["issue_type"], "login_expired")
+        self.assertTrue(result["account_issue"])
+        self.assertTrue(result["safe_to_retry"])
+
     def test_upload_returns_platform_result_extras(self):
         import asyncio
         uploader = WeiboVideo(
@@ -107,8 +122,88 @@ class WeiboVideoUploadTests(unittest.TestCase):
         file_chooser.set_files.assert_awaited_once_with("/fake.mp4")
         self.assertEqual(result, {"success": False, "message": "登录在文件选择后失效"})
 
+    def test_upload_maps_pre_selection_click_login_redirect_to_safe_retry_result(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        class UploadButton:
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                return 1
+
+            async def is_visible(self):
+                return True
+
+            async def click(self):
+                page.url = "https://weibo.com/newlogin?retcode=6102"
+                raise RuntimeError("file chooser was interrupted")
+
+        class HiddenLocator:
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                return 0
+
+            async def is_visible(self):
+                return False
+
+        class FakePage:
+            url = "https://weibo.com/upload/channel"
+
+            async def goto(self, *args, **kwargs):
+                pass
+
+            def locator(self, selector):
+                if selector == "button[id^=\"video_button_upload\"], button._btn1_109u9_8":
+                    return UploadButton()
+                return HiddenLocator()
+
+            def expect_file_chooser(self, **kwargs):
+                return chooser_context()
+
+        @asynccontextmanager
+        async def chooser_context():
+            yield object()
+
+        page = FakePage()
+
+        @asynccontextmanager
+        async def fake_session():
+            yield page
+
+        uploader = WeiboVideo(
+            title="t", file_path="/fake.mp4", tags=[], publish_date=0,
+            account_file="/fake.json", desc="", publish_strategy=PublishStrategy.IMMEDIATE,
+        )
+        with patch.object(uploader, "validate_upload_args", AsyncMock()), \
+             patch.object(uploader, "_browser_session", return_value=fake_session()):
+            result = asyncio.run(uploader.upload())
+
+        self.assertEqual(result["issue_type"], "login_expired")
+        self.assertTrue(result["safe_to_retry"])
+
 
 class WeiboNoteUploadTests(unittest.TestCase):
+    def test_upload_maps_validation_cookie_auth_failure_to_safe_retry_result(self):
+        import asyncio
+
+        uploader = WeiboNote(
+            image_paths=["/fake.jpg"], note="test note", tags=[],
+            publish_date=0, account_file="/fake.json",
+        )
+        with patch("uploader.weibo_uploader.main.os.path.exists", return_value=True), \
+             patch("uploader.weibo_uploader.main.cookie_auth", AsyncMock(return_value=False)):
+            result = asyncio.run(uploader.upload())
+
+        self.assertEqual(result["issue_type"], "login_expired")
+        self.assertTrue(result["account_issue"])
+        self.assertTrue(result["safe_to_retry"])
+
     def test_upload_returns_platform_result_extras(self):
         import asyncio
         uploader = WeiboNote(
