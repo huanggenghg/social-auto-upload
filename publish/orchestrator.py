@@ -61,7 +61,7 @@ def _auth_failure(platform_name: str, login_error: Optional[str] = None) -> Dict
 
 def _is_safe_login_expiry(result: Dict[str, Any]) -> bool:
     return (
-        not result.get("success")
+        result.get("success") is False
         and result.get("account_issue") is True
         and result.get("issue_type") == "login_expired"
         and result.get("safe_to_retry") is True
@@ -130,7 +130,7 @@ async def publish_one_item(video_params: Dict[str, Any]) -> Dict[str, Any]:
                 print_error("AUTH-001", result["message"], f"引导用户在弹出的浏览器中完成 {platform_name} 扫码登录后重试")
 
         results[platform] = result
-        if result["success"]:
+        if result.get("success"):
             print("  ✅ 成功")
         else:
             print(f"  ❌ 失败: {result['message']}")

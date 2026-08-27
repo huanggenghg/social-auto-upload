@@ -502,6 +502,28 @@ class AccountLoginFlowTests(unittest.TestCase):
         publish.assert_awaited_once()
         self.assertEqual(results["weibo"], expiry)
 
+    def test_non_boolean_unsuccessful_result_does_not_force_login(self):
+        for success_value in (None, unittest.mock.sentinel.missing):
+            with self.subTest(success_value=success_value):
+                params = self._weibo_params()
+                expiry = {
+                    "message": "登录已过期",
+                    "account_issue": True,
+                    "issue_type": "login_expired",
+                    "safe_to_retry": True,
+                }
+                if success_value is not unittest.mock.sentinel.missing:
+                    expiry["success"] = success_value
+
+                with patch("publish.orchestrator.ensure_account_login", new=AsyncMock(return_value=True)) as ensure_login, \
+                     patch("publish.orchestrator.publish_to_platform", new=AsyncMock(return_value=expiry)) as publish, \
+                     patch("publish.orchestrator.print_results"):
+                    results = publish_all.run_async_for_test(publish_all.publish_one_item(params))
+
+                ensure_login.assert_awaited_once_with("weibo", "cookies/weibo.json")
+                publish.assert_awaited_once()
+                self.assertEqual(results["weibo"], expiry)
+
     def test_publish_one_item_triggers_login_before_publish(self):
         params = {
             "enabled_platforms": ["douyin"],
