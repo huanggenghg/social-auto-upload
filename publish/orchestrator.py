@@ -47,6 +47,27 @@ def exit_code_from_results(all_results: Dict[str, Dict[str, Any]]) -> int:
     return EXIT_PARTIAL_FAIL
 
 
+def _auth_failure(platform_name: str, login_error: Optional[str] = None) -> Dict[str, Any]:
+    message = f"登录失败: {platform_name}"
+    if login_error:
+        message += f" - {login_error}"
+    return {
+        "success": False,
+        "message": message,
+        "account_issue": True,
+        "error_code": "AUTH-001",
+    }
+
+
+def _is_safe_login_expiry(result: Dict[str, Any]) -> bool:
+    return (
+        not result.get("success")
+        and result.get("account_issue") is True
+        and result.get("issue_type") == "login_expired"
+        and result.get("safe_to_retry") is True
+    )
+
+
 async def publish_one_item(video_params: Dict[str, Any]) -> Dict[str, Any]:
     print_header(video_params)
 
@@ -56,12 +77,12 @@ async def publish_one_item(video_params: Dict[str, Any]) -> Dict[str, Any]:
     for i, platform in enumerate(video_params["enabled_platforms"], 1):
         platform_name = PLATFORM_NAMES.get(platform, platform)
 
-        # 获取账号文件（支持逗号分隔多账号）
         account_key = f"{platform}_account"
-        account_file_str = video_params["platforms"].get(account_key, "")
-        account_files = [af.strip() for af in account_file_str.split(",") if af.strip()]
+        account_file = str(video_params["platforms"].get(account_key, "") or "").strip()
+        if "," in account_file:
+            account_file = ""
 
-        if not account_files:
+        if not account_file:
             default_file = default_account_file(platform)
             if default_file is None:
                 results[platform] = {
@@ -73,48 +94,46 @@ async def publish_one_item(video_params: Dict[str, Any]) -> Dict[str, Any]:
                 print("  ❌ 失败: 未配置账号")
                 continue
             print(f"  ℹ️ 未发现 {platform_name} 账号文件，将触发扫码登录: {default_file}")
-            account_files = [default_file]
+            account_file = default_file
 
-        for acct_idx, account_file in enumerate(account_files):
-            if len(account_files) > 1:
-                print(f"[{i}/{total}] 发布到 {platform_name} (账号 {acct_idx + 1}/{len(account_files)})...")
+        print(f"[{i}/{total}] 发布到 {platform_name}...")
+        platform_params = {
+            **video_params,
+            "account_file": account_file,
+        }
+
+        if platform_requires_account_login(platform):
+            login_error = None
+            try:
+                login_ok = await ensure_account_login(platform, account_file)
+            except Exception as exc:
+                login_ok = False
+                login_error = str(exc) or exc.__class__.__name__
+            if not login_ok:
+                result = _auth_failure(platform_name, login_error)
+                results[platform] = result
+                print_error("AUTH-001", result["message"], f"引导用户在弹出的浏览器中完成 {platform_name} 扫码登录后重试")
+                continue
+
+        result = await publish_to_platform(platform, platform_params)
+        if _is_safe_login_expiry(result):
+            login_error = None
+            try:
+                login_ok = await ensure_account_login(platform, account_file, force=True)
+            except Exception as exc:
+                login_ok = False
+                login_error = str(exc) or exc.__class__.__name__
+            if login_ok:
+                result = await publish_to_platform(platform, platform_params)
             else:
-                print(f"[{i}/{total}] 发布到 {platform_name}...")
+                result = _auth_failure(platform_name, login_error)
+                print_error("AUTH-001", result["message"], f"引导用户在弹出的浏览器中完成 {platform_name} 扫码登录后重试")
 
-            platform_params = {
-                **video_params,
-                "account_file": account_file,
-            }
-
-            result_key = platform if len(account_files) == 1 else f"{platform}_{acct_idx + 1}"
-
-            if platform_requires_account_login(platform):
-                login_error = None
-                try:
-                    login_ok = await ensure_account_login(platform, account_file)
-                except Exception as exc:
-                    login_ok = False
-                    login_error = str(exc) or exc.__class__.__name__
-                if not login_ok:
-                    msg = f"登录失败: {platform_name}"
-                    if login_error:
-                        msg += f" - {login_error}"
-                    results[result_key] = {
-                        "success": False,
-                        "message": msg,
-                        "account_issue": True,
-                        "error_code": "AUTH-001",
-                    }
-                    print_error("AUTH-001", msg, f"引导用户在弹出的浏览器中完成 {platform_name} 扫码登录后重试")
-                    continue
-
-            result = await publish_to_platform(platform, platform_params)
-            results[result_key] = result
-
-            if result["success"]:
-                print("  ✅ 成功")
-            else:
-                print(f"  ❌ 失败: {result['message']}")
+        results[platform] = result
+        if result["success"]:
+            print("  ✅ 成功")
+        else:
+            print(f"  ❌ 失败: {result['message']}")
 
     print_results(results)
     return results
