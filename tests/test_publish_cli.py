@@ -218,6 +218,19 @@ class SkillDocBlackboxTests(unittest.TestCase):
         self.assertIn("不要自行检索文件系统", text, "SKILL.md 必须禁止 agent 自行检索文件系统挑素材")
         self.assertIn("仅当用户明确", text, "自动生成只允许在用户明确授权时使用")
 
+    def test_agent_hides_publish_process_logs_and_reports_only_milestones(self):
+        text = self.SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("用户可见反馈仅限以下三类", text)
+        for milestone in ["发布环境状态", "发布开始", "发布结果"]:
+            self.assertIn(milestone, text)
+        self.assertIn("stdout 和 stderr 重定向到 Agent 内部临时日志", text)
+        self.assertIn("禁止向用户展示或转述", text)
+        self.assertIn("不发送发布进度", text)
+        for retained_result in ["错误码", "结果链接", "总体计数"]:
+            self.assertIn(retained_result, text)
+        self.assertNotIn("--agent-mode", text)
+
 
 class PublicSingleAccountContractTests(unittest.TestCase):
     DOC_PATHS = [
