@@ -36,16 +36,23 @@ Add this method to `SkillDocBlackboxTests` in `tests/test_publish_cli.py`:
 ```python
 def test_agent_hides_publish_process_logs_and_reports_only_milestones(self):
     text = self.SKILL_PATH.read_text(encoding="utf-8")
+    feedback = text.split("## Agent 用户反馈", 1)[1].split("## 读取结果", 1)[0]
 
-    self.assertIn("用户可见反馈仅限以下三类", text)
+    self.assertIn("用户可见反馈仅限以下三类", feedback)
     for milestone in ["发布环境状态", "发布开始", "发布结果"]:
-        self.assertIn(milestone, text)
-    self.assertIn("stdout 和 stderr 重定向到 Agent 内部临时日志", text)
-    self.assertIn("禁止向用户展示或转述", text)
-    self.assertIn("不发送发布进度", text)
-    for retained_result in ["错误码", "结果链接", "总体计数"]:
-        self.assertIn(retained_result, text)
+        self.assertIn(milestone, feedback)
+    self.assertIn("stdout 和 stderr 重定向到 Agent 内部临时日志", feedback)
+    self.assertIn("禁止向用户展示或转述", feedback)
+    self.assertIn("不发送发布进度", feedback)
+    for hidden_detail in ["依赖安装", "登录过程", "浏览器操作", "调试信息", "异常堆栈"]:
+        self.assertIn(hidden_detail, feedback)
+    for retained_result in ["各平台结果", "错误码", "结果链接", "总体计数"]:
+        self.assertIn(retained_result, feedback)
+    self.assertNotIn("引导用户完成扫码登录后重试", text)
+    self.assertNotIn("应直接展示图片", text)
+    self.assertNotIn("应指导用户在本地真实终端", text)
     self.assertNotIn("--agent-mode", text)
+    self.assertNotIn("--agent-mode", publish_all.build_parser().format_help())
 ```
 
 - [ ] **Step 2: Run the focused test and verify RED**
@@ -69,7 +76,7 @@ Insert the following section before `## 读取结果` in `skills/opub-cli/SKILL.
 
 1. **发布环境状态**：正在检查、已就绪，或环境异常的简短结论。
 2. **发布开始**：发布已启动，可包含目标平台和素材数量。
-3. **发布结果**：各平台成功或失败、错误码、结果链接和总体计数。
+3. **发布结果**：各平台结果（成功或失败）、错误码、结果链接和总体计数。
 
 执行 `opub ...` 时，必须将 stdout 和 stderr 重定向到 Agent 内部临时日志，禁止向用户展示或转述原始命令输出。Agent 只可在内部读取日志以判断退出码并提取最终结果，不得把内部日志转化为过程消息。
 
@@ -80,6 +87,12 @@ In `## Agent 注意事项`, replace the existing QR-code and Bilibili interactio
 
 ```markdown
 - 发布运行期间不要额外展示二维码、转述登录过程或提示扫码；登录交互由弹出的浏览器界面负责。
+```
+
+In the exit-code table, replace the exit code `12` Agent action with:
+
+```markdown
+在发布结果中反馈 AUTH-xxx，不追加扫码提示
 ```
 
 Do not add or document an Agent-only CLI flag.

@@ -220,16 +220,23 @@ class SkillDocBlackboxTests(unittest.TestCase):
 
     def test_agent_hides_publish_process_logs_and_reports_only_milestones(self):
         text = self.SKILL_PATH.read_text(encoding="utf-8")
+        feedback = text.split("## Agent 用户反馈", 1)[1].split("## 读取结果", 1)[0]
 
-        self.assertIn("用户可见反馈仅限以下三类", text)
+        self.assertIn("用户可见反馈仅限以下三类", feedback)
         for milestone in ["发布环境状态", "发布开始", "发布结果"]:
-            self.assertIn(milestone, text)
-        self.assertIn("stdout 和 stderr 重定向到 Agent 内部临时日志", text)
-        self.assertIn("禁止向用户展示或转述", text)
-        self.assertIn("不发送发布进度", text)
-        for retained_result in ["错误码", "结果链接", "总体计数"]:
-            self.assertIn(retained_result, text)
+            self.assertIn(milestone, feedback)
+        self.assertIn("stdout 和 stderr 重定向到 Agent 内部临时日志", feedback)
+        self.assertIn("禁止向用户展示或转述", feedback)
+        self.assertIn("不发送发布进度", feedback)
+        for hidden_detail in ["依赖安装", "登录过程", "浏览器操作", "调试信息", "异常堆栈"]:
+            self.assertIn(hidden_detail, feedback)
+        for retained_result in ["各平台结果", "错误码", "结果链接", "总体计数"]:
+            self.assertIn(retained_result, feedback)
+        self.assertNotIn("引导用户完成扫码登录后重试", text)
+        self.assertNotIn("应直接展示图片", text)
+        self.assertNotIn("应指导用户在本地真实终端", text)
         self.assertNotIn("--agent-mode", text)
+        self.assertNotIn("--agent-mode", publish_all.build_parser().format_help())
 
 
 class PublicSingleAccountContractTests(unittest.TestCase):
