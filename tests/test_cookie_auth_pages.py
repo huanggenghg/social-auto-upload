@@ -97,12 +97,14 @@ class CookieAuthPageTests(unittest.TestCase):
 
         self.assertTrue(valid)
 
-    def test_tencent_auth_page_requires_publish_marker(self):
+    def test_tencent_auth_page_accepts_url_fallback_without_login_markers(self):
+        # 2026-08 plan:认证后 URL 且无任何登录标记可见时判定登录完成,
+        # 不再强制要求可见的发布标记(Agent 环境下发布标记常未及时渲染)。
         page = FakePage(tencent_main.TENCENT_UPLOAD_URL)
 
         valid = asyncio.run(tencent_main._is_tencent_login_completed(page))
 
-        self.assertFalse(valid)
+        self.assertTrue(valid)
 
     def test_tencent_auth_page_accepts_visible_publish_marker(self):
         page = FakePage(
