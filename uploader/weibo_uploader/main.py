@@ -87,6 +87,20 @@ async def _wait_for_weibo_upload_button(
         )
 
 
+async def _select_weibo_video_file(page: Page, file_path: str) -> None:
+    """选择视频文件：优先直接设置已有的文件输入框，无输入框时走按钮 + file chooser 后备。"""
+    file_input = page.locator('input[type="file"]').first
+    if await file_input.count():
+        await file_input.set_input_files(file_path)
+        return
+
+    upload_button = await _wait_for_weibo_upload_button(page)
+    async with page.expect_file_chooser(timeout=30000) as chooser_info:
+        await upload_button.click()
+    chooser = await chooser_info.value
+    await chooser.set_files(file_path)
+
+
 async def _wait_for_weibo_image_input(
     page: Page,
     selectors,
@@ -329,26 +343,18 @@ class WeiboVideo(WeiboBaseUploader):
 
         await page.goto(WEIBO_UPLOAD_CHANNEL_URL)
 
-        # 点击"上传视频"按钮触发 file chooser
-        weibo_logger.info(_msg("🔍", "查找上传视频按钮..."))
+        # 选择视频文件：优先直接使用页面已有的文件输入框，
+        # 点击"上传视频"按钮触发 file chooser 仅作为后备。
+        weibo_logger.info(_msg("🔍", "查找视频文件输入入口..."))
         try:
-            upload_btn = await _wait_for_weibo_upload_button(page)
+            await _select_weibo_video_file(page, self.file_path)
         except LoginExpiredError as exc:
             raise _WeiboPreMediaLoginExpired(str(exc)) from exc
-
-        # 在首次选择媒体前，页面跳转到登录页可安全判定为 cookie 失效。
-        try:
-            async with page.expect_file_chooser(timeout=30000) as fc_info:
-                await upload_btn.click()
-                weibo_logger.info(_msg("✅", "已点击上传视频按钮"))
-
-            file_chooser = await fc_info.value
         except Exception as exc:
+            # 在首次选择媒体前，页面跳转到登录页可安全判定为 cookie 失效。
             if await _is_weibo_login_page(page):
                 raise _WeiboPreMediaLoginExpired("cookie 已失效，请重新扫码登录") from exc
             raise
-
-        await file_chooser.set_files(self.file_path)
         weibo_logger.info(_msg("📤", "视频文件已选择，开始上传..."))
 
         # 等待编辑表单出现（上传开始后会显示标题/类型等表单）

@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 from uploader.base_video import BaseBrowserUploader, LoginExpiredError, PublishStrategy
-from uploader.weibo_uploader.main import WeiboBaseUploader, WeiboVideo, WeiboNote, cookie_auth, weibo_setup
+from uploader.weibo_uploader.main import (
+    WEIBO_UPLOAD_BUTTON_SELECTOR,
+    WeiboBaseUploader,
+    WeiboNote,
+    WeiboVideo,
+    cookie_auth,
+    weibo_setup,
+)
 
 
 class WeiboBaseUploaderInheritanceTests(unittest.TestCase):
@@ -186,6 +195,117 @@ class WeiboVideoUploadTests(unittest.TestCase):
 
         self.assertEqual(result["issue_type"], "login_expired")
         self.assertTrue(result["safe_to_retry"])
+
+
+class FakeFileInput:
+    def __init__(self, count=0):
+        self.set_input_files = AsyncMock()
+        self._count = count
+
+    @property
+    def first(self):
+        return self
+
+    async def count(self):
+        return self._count
+
+
+class FakeFileChooser:
+    def __init__(self):
+        self.set_files = AsyncMock()
+
+
+class FakeFileChooserInfo:
+    def __init__(self, chooser):
+        self._chooser = chooser
+
+    @property
+    def value(self):
+        async def resolve():
+            return self._chooser
+
+        return resolve()
+
+
+class WeiboUploadPage:
+    url = "https://weibo.com/upload/channel"
+
+    def __init__(self, file_input):
+        self.file_input = file_input
+        self.file_chooser = FakeFileChooser()
+
+    async def goto(self, *args, **kwargs):
+        pass
+
+    async def evaluate(self, script):
+        # 让上传流程走"秒传完成"分支立即返回
+        return "auto"
+
+    def expect_file_chooser(self, **kwargs):
+        page = self
+
+        @asynccontextmanager
+        async def chooser_context():
+            yield FakeFileChooserInfo(page.file_chooser)
+
+        return chooser_context()
+
+    def locator(self, selector):
+        if selector == 'input[type="file"]':
+            return self.file_input
+        if selector == WEIBO_UPLOAD_BUTTON_SELECTOR:
+            return _VisibleLocator()
+        return _HiddenLocator()
+
+
+class _HiddenLocator:
+    @property
+    def first(self):
+        return self
+
+    async def count(self):
+        return 0
+
+    async def is_visible(self):
+        return False
+
+
+class _VisibleLocator:
+    @property
+    def first(self):
+        return self
+
+    async def count(self):
+        return 1
+
+    async def is_visible(self):
+        return True
+
+    async def click(self):
+        return None
+
+
+class WeiboVideoFileSelectionTests(unittest.TestCase):
+    def test_video_upload_prefers_existing_file_input(self):
+        file_input = FakeFileInput(count=1)
+        page = WeiboUploadPage(file_input=file_input)
+        uploader = WeiboVideo(
+            title="t", file_path="/fake.mp4", tags=[], publish_date=0,
+            account_file="/fake.json", desc="", publish_strategy=PublishStrategy.IMMEDIATE,
+        )
+        with patch(
+            "uploader.weibo_uploader.main._wait_for_weibo_upload_button",
+            AsyncMock(side_effect=AssertionError("button path must not run")),
+        ):
+            asyncio.run(uploader.upload_video_content(page))
+        file_input.set_input_files.assert_awaited_once_with("/fake.mp4")
+
+    def test_video_upload_uses_file_chooser_when_input_is_absent(self):
+        from uploader.weibo_uploader.main import _select_weibo_video_file
+
+        page = WeiboUploadPage(file_input=FakeFileInput(count=0))
+        asyncio.run(_select_weibo_video_file(page, "/fake.mp4"))
+        page.file_chooser.set_files.assert_awaited_once_with("/fake.mp4")
 
 
 class WeiboNoteUploadTests(unittest.TestCase):
