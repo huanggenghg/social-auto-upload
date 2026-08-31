@@ -4,6 +4,7 @@ import platform
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -175,9 +176,25 @@ def ensure_biliup_binary(force_check: bool = True) -> Path:
     return binary_path
 
 
+def _needs_detached_login_console(interactive: bool) -> bool:
+    """Agent 等非终端环境里,交互式 biliup login 没有可用的 stdin/stdout,
+    需要弹出独立控制台让用户扫码;真实终端保持继承 stdio 的原行为。"""
+    return (
+        interactive
+        and platform.system().lower() == "windows"
+        and (not sys.stdin.isatty() or not sys.stdout.isatty())
+    )
+
+
 def run_biliup_command(arguments: list[str], interactive: bool = False) -> subprocess.CompletedProcess[str]:
     binary_path = ensure_biliup_binary(force_check=False)
     command = [str(binary_path), *arguments]
+    if _needs_detached_login_console(interactive):
+        return subprocess.run(
+            command,
+            check=False,
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+        )
     if interactive:
         return subprocess.run(command, check=False)
     return subprocess.run(

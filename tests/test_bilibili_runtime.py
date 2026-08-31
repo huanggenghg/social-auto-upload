@@ -1,3 +1,4 @@
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -59,4 +60,30 @@ class BiliupRuntimeTests(unittest.TestCase):
         mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
         run_biliup_command(["login"], interactive=True)
         _, kwargs = mock_run.call_args
+        self.assertNotIn("capture_output", kwargs)
+
+    @patch("uploader.bilibili_uploader.runtime.subprocess.run")
+    @patch("uploader.bilibili_uploader.runtime.ensure_biliup_binary")
+    def test_interactive_login_opens_new_console_when_stdio_is_redirected(self, ensure, run):
+        ensure.return_value = Path("C:/mock/biliup.exe")
+        run.return_value = Mock(returncode=0)
+        with patch("uploader.bilibili_uploader.runtime.platform.system", return_value="Windows"), \
+             patch("sys.stdin.isatty", return_value=False), \
+             patch("sys.stdout.isatty", return_value=False):
+            run_biliup_command(["-u", "account.json", "login"], interactive=True)
+        _, kwargs = run.call_args
+        self.assertEqual(kwargs["creationflags"], subprocess.CREATE_NEW_CONSOLE)
+        self.assertNotIn("capture_output", kwargs)
+
+    @patch("uploader.bilibili_uploader.runtime.subprocess.run")
+    @patch("uploader.bilibili_uploader.runtime.ensure_biliup_binary")
+    def test_interactive_login_keeps_inherited_stdio_in_real_terminal(self, ensure, run):
+        ensure.return_value = Path("C:/mock/biliup.exe")
+        run.return_value = Mock(returncode=0)
+        with patch("uploader.bilibili_uploader.runtime.platform.system", return_value="Windows"), \
+             patch("sys.stdin.isatty", return_value=True), \
+             patch("sys.stdout.isatty", return_value=True):
+            run_biliup_command(["login"], interactive=True)
+        _, kwargs = run.call_args
+        self.assertNotIn("creationflags", kwargs)
         self.assertNotIn("capture_output", kwargs)
