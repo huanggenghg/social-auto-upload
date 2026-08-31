@@ -149,6 +149,11 @@ class BaiJiaHaoVideo(BaseBrowserUploader):
         return await set_init_script(context)
 
     @classmethod
+    async def is_login_completed(cls, page: Page) -> bool:
+        """Override: 百家号登录完成需要 DOM marker 校验,不能只看 URL。"""
+        return await _is_baijiahao_auth_page_valid(page)
+
+    @classmethod
     async def cookie_auth(cls, account_file: str) -> bool:
         """Override: 百家号 cookie 校验需要 DOM marker 检查(_is_baijiahao_auth_page_valid)。"""
         if not os.path.exists(account_file):

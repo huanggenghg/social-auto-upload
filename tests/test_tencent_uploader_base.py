@@ -490,6 +490,51 @@ class TencentRedundantCookieAuthTests(unittest.TestCase):
         pw_mock.assert_not_called()
 
 
+class TencentLoginCompletionTests(unittest.TestCase):
+    @staticmethod
+    def _make_page(url, visible_selectors=frozenset()):
+        class FakeLocator:
+            def __init__(self, visible):
+                self._visible = visible
+
+            @property
+            def first(self):
+                return self
+
+            async def count(self):
+                return 1 if self._visible else 0
+
+            async def is_visible(self):
+                return self._visible
+
+        page = type("FakePage", (), {})()
+        page.url = url
+
+        def locator(selector):
+            return FakeLocator(selector in visible_selectors)
+
+        page.locator = locator
+        return page
+
+    def test_login_completed_on_publish_url_without_login_markers(self):
+        import asyncio
+
+        page = TencentLoginCompletionTests._make_page(
+            url="https://channels.weixin.qq.com/platform/post/create",
+            visible_selectors=set(),
+        )
+        self.assertTrue(asyncio.run(tencent_main._is_tencent_login_completed(page)))
+
+    def test_login_not_completed_when_qr_iframe_is_visible(self):
+        import asyncio
+
+        page = TencentLoginCompletionTests._make_page(
+            url="https://channels.weixin.qq.com/platform/post/create",
+            visible_selectors={"iframe[src*=\"qrconnect\"]"},
+        )
+        self.assertFalse(asyncio.run(tencent_main._is_tencent_login_completed(page)))
+
+
 class ModuleWrapperTests(unittest.TestCase):
     def test_setup_signature_is_5_params(self):
         import inspect

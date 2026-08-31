@@ -15,6 +15,32 @@ class BaiJiaHaoVideoInheritanceTests(unittest.TestCase):
         self.assertEqual(BaiJiaHaoVideo.PLATFORM_NAME, "baijiahao")
 
 
+class BaiJiaHaoLoginCompletionTests(unittest.TestCase):
+    def test_login_completed_uses_baijiahao_dom_validation(self):
+        import asyncio
+        from uploader.baijiahao_uploader import main as bj_main
+
+        page = object()
+        with patch(
+            "uploader.baijiahao_uploader.main._is_baijiahao_auth_page_valid",
+            AsyncMock(return_value=True),
+        ) as validate:
+            result = asyncio.run(BaiJiaHaoVideo.is_login_completed(page))
+        self.assertTrue(result)
+        validate.assert_awaited_once_with(page)
+
+    def test_login_not_completed_when_dom_validation_fails(self):
+        import asyncio
+
+        page = object()
+        with patch(
+            "uploader.baijiahao_uploader.main._is_baijiahao_auth_page_valid",
+            AsyncMock(return_value=False),
+        ):
+            result = asyncio.run(BaiJiaHaoVideo.is_login_completed(page))
+        self.assertFalse(result)
+
+
 class BaiJiaHaoVideoUploadTests(unittest.TestCase):
     def test_upload_returns_unified_dict_with_url(self):
         import asyncio

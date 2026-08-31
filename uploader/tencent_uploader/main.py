@@ -146,6 +146,7 @@ async def _is_tencent_login_completed(page: Page) -> bool:
         return False
 
     login_markers = [
+        page.locator('iframe[src*="qrconnect"]').first,
         page.locator("div.login-qrcode-wrap").first,
         page.locator("div.qrcode-wrap").first,
         page.locator("img.qrcode").first,
@@ -158,7 +159,8 @@ async def _is_tencent_login_completed(page: Page) -> bool:
         except Exception:
             continue
 
-    return False
+    # 已在认证后 URL 上且没有任何登录标记可见，视为登录完成
+    return True
 
 
 async def _is_tencent_qrcode_expired(page: Page) -> bool:
