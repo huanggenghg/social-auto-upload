@@ -207,19 +207,15 @@ async def get_ks_cookie(
             for _ in range(max_checks):
                 if page.url.startswith(KUAISHOU_UPLOAD_URL) or await _is_ks_login_page_gone(page):
                     await context.storage_state(path=account_file)
-                    if await cookie_auth(account_file):
-                        kuaishou_logger.success(_msg("🥳", "快手扫码登录成功，小人开心收工"))
-                        result = _build_login_result(True, "success", "快手扫码登录成功", account_file, qrcode_info, page.url)
-                    else:
-                        kuaishou_logger.error(_msg("😢", "快手扫码完成了，但 cookie 校验失败"))
-                        result = _build_login_result(
-                            False,
-                            "cookie_invalid",
-                            "快手扫码流程结束，但 cookie 校验失败",
-                            account_file,
-                            qrcode_info,
-                            page.url,
-                        )
+                    kuaishou_logger.success(_msg("🥳", "快手扫码登录成功，小人开心收工"))
+                    result = _build_login_result(
+                        True,
+                        "success",
+                        "快手扫码登录成功",
+                        account_file,
+                        qrcode_info,
+                        page.url,
+                    )
                     return result
 
                 if qrcode_info and await _is_ks_qrcode_expired(page):

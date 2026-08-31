@@ -88,6 +88,63 @@ class RecordingPage:
         return self.locators[selector]
 
 
+class FakeLoginPage:
+    url = "https://www.xiaohongshu.com/"
+
+    async def goto(self, url, **kwargs):
+        self.url = url
+
+    async def wait_for_load_state(self, state=None, **kwargs):
+        return None
+
+
+class FakeLoginContext:
+    def __init__(self):
+        self.saved_path = None
+
+    async def new_page(self):
+        return FakeLoginPage()
+
+    async def add_init_script(self, script):
+        return None
+
+    async def storage_state(self, path=None):
+        self.saved_path = path
+
+    async def close(self):
+        return None
+
+
+class FakeBrowser:
+    def __init__(self, context):
+        self._context = context
+
+    async def new_context(self):
+        return self._context
+
+    async def close(self):
+        return None
+
+
+class FakeChromium:
+    def __init__(self, context):
+        self._browser = FakeBrowser(context)
+
+    async def launch(self, **kwargs):
+        return self._browser
+
+
+class FakePlaywright:
+    def __init__(self, context):
+        self.chromium = FakeChromium(context)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+
 class XiaohongshuUploaderTests(unittest.TestCase):
     def test_find_xhs_qrcode_locator_prefers_scan_sibling_inside_login_box(self):
         qrcode_locator = FakeLocator("qrcode", count=1, src="data:image/png;base64,abc")
@@ -116,6 +173,19 @@ class XiaohongshuUploaderTests(unittest.TestCase):
 
         locator = asyncio.run(xhs_main._find_xhs_qrcode_locator(page))
         self.assertIs(locator, qrcode_locator)
+
+    def test_cookie_gen_saves_authenticated_state_without_parallel_revalidation(self):
+        context = FakeLoginContext()
+        account_file = xhs_main._resolve_account_file("account.json")
+        with patch.object(xhs_main, "async_playwright", return_value=FakePlaywright(context)), \
+             patch.object(xhs_main, "_save_xhs_qrcode", AsyncMock(return_value={"image_path": "qrcode.png"})), \
+             patch.object(xhs_main, "remove_qrcode_file", return_value=False), \
+             patch.object(xhs_main.XiaoHongShuBaseUploader, "is_login_completed", AsyncMock(return_value=True)), \
+             patch.object(xhs_main, "cookie_auth", AsyncMock(side_effect=AssertionError("must not revalidate before closing login browser"))):
+            result = asyncio.run(xhs_main.xiaohongshu_cookie_gen("account.json", poll_interval=0, max_checks=1))
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(context.saved_path, account_file)
 
     def test_setup_returns_detail_when_cookie_invalid_without_handle(self):
         with patch("uploader.xiaohongshu_uploader.main.os.path.exists", return_value=False):

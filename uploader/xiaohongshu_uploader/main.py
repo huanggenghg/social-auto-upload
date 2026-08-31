@@ -390,18 +390,15 @@ async def xiaohongshu_cookie_gen(
                     await page.wait_for_load_state("domcontentloaded")
                     await asyncio.sleep(1)
                     await context.storage_state(path=account_file)
-                    if await cookie_auth(account_file):
-                        xiaohongshu_logger.success(_msg("🥳", "小红书扫码登录成功，小人开心收工"))
-                        result = _build_login_result(True, "success", "小红书扫码登录成功", account_file, qrcode_info, page.url)
-                    else:
-                        result = _build_login_result(
-                            False,
-                            "cookie_invalid",
-                            "小红书扫码流程结束，但 cookie 校验失败",
-                            account_file,
-                            qrcode_info,
-                            page.url,
-                        )
+                    xiaohongshu_logger.success(_msg("🥳", "小红书扫码登录成功，小人开心收工"))
+                    result = _build_login_result(
+                        True,
+                        "success",
+                        "小红书扫码登录成功",
+                        account_file,
+                        qrcode_info,
+                        page.url,
+                    )
                     return result
 
                 await asyncio.sleep(poll_interval)
