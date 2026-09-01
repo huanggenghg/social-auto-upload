@@ -222,7 +222,9 @@ class BaseBrowserUploader(BasePlatformUploader):
             try:
                 context = await cls._init_context(browser, account_file)
                 page = await context.new_page()
-                await page.goto(cls.UPLOAD_URL)
+                # domcontentloaded: 部分平台页面的第三方资源会让 load 事件
+                # 长时间不触发, 默认 goto(30s, load) 会误判为导航失败
+                await page.goto(cls.UPLOAD_URL, timeout=60000, wait_until="domcontentloaded")
                 await page.wait_for_timeout(3000)
                 current_url = (page.url or "").lower()
                 if any(marker.lower() in current_url for marker in cls.LOGIN_MARKERS):
@@ -291,7 +293,7 @@ class BaseBrowserUploader(BasePlatformUploader):
                 if pre_url and pre_url != "about:blank" and await cls.is_login_completed(page):
                     result = await cls._save_state_and_validate(context, account_file, page)
                 else:
-                    await page.goto(cls.LOGIN_URL)
+                    await page.goto(cls.LOGIN_URL, timeout=60000, wait_until="domcontentloaded")
                     await page.wait_for_timeout(3000)
                     qrcode_src = await cls.extract_qrcode_src(page)
                     if qrcode_src:

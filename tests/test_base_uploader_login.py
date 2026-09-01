@@ -27,8 +27,10 @@ class FakeUploader(BaseBrowserUploader):
 class FakePage:
     def __init__(self, url):
         self.url = url
+        self.goto_calls = []
 
-    async def goto(self, url):
+    async def goto(self, url, **kwargs):
+        self.goto_calls.append((url, kwargs))
         self.url = url
 
     async def wait_for_timeout(self, ms):
@@ -41,11 +43,14 @@ class FakeContext:
         self._upload_url = upload_url
         self._goto_count = 0
         self.storage_state_saved = False
+        self.pages = []
 
     async def new_page(self):
         # first goto (login) returns login URL, subsequent gotos return upload URL
         self._goto_count += 1
-        return FakePage(self._login_url if self._goto_count == 1 else self._upload_url)
+        page = FakePage(self._login_url if self._goto_count == 1 else self._upload_url)
+        self.pages.append(page)
+        return page
 
     async def storage_state(self, path=None):
         self.storage_state_saved = True
@@ -174,6 +179,25 @@ class CookieGenTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["status"], "failed")
         self.assertIn("network error", result["message"])
+
+    def test_cookie_gen_navigates_to_login_page_with_domcontentloaded(self):
+        """登录页第三方资源可能让 load 事件永不触发，goto 必须用 domcontentloaded。
+
+        否则 goto 30s 超时 → cookie_gen 直接失败 → 登录浏览器窗口闪退。
+        """
+        with patch("uploader.base_video.async_playwright") as mock_ap, \
+             patch("uploader.base_video.set_init_script", side_effect=lambda ctx: ctx), \
+             patch.object(FakeUploader, "is_login_completed", AsyncMock(return_value=False)):
+            fake_context = FakeContext("https://example.com/login", "https://example.com/login")
+            fake_pw = FakePlaywright(fake_context)
+            mock_ap.return_value = fake_pw
+            asyncio.run(FakeUploader.cookie_gen("/fake.json"))
+
+        goto_calls = [call for page in fake_context.pages for call in page.goto_calls]
+        self.assertTrue(goto_calls, "cookie_gen should navigate to the login page")
+        url, kwargs = goto_calls[0]
+        self.assertEqual(url, "https://example.com/login")
+        self.assertEqual(kwargs.get("wait_until"), "domcontentloaded")
 
 
 if __name__ == "__main__":
