@@ -271,6 +271,10 @@ class _HiddenLocator:
 
 
 class _VisibleLocator:
+    def __init__(self):
+        self.clicked = False
+        self.clicked_with = {}
+
     @property
     def first(self):
         return self
@@ -281,31 +285,128 @@ class _VisibleLocator:
     async def is_visible(self):
         return True
 
-    async def click(self):
+    async def click(self, timeout=30000, force=False):
+        self.clicked = True
+        self.clicked_with = {"timeout": timeout, "force": force}
         return None
 
 
 class WeiboVideoFileSelectionTests(unittest.TestCase):
-    def test_video_upload_prefers_existing_file_input(self):
+    def test_video_upload_uses_file_chooser_even_when_input_present(self):
+        # 微博上传页只有走"上传视频"按钮的 file chooser 路径才会切换到编辑器 UI；
+        # 直接对隐藏 input set_input_files 只会上传、UI 不进入编辑表单。
         file_input = FakeFileInput(count=1)
         page = WeiboUploadPage(file_input=file_input)
         uploader = WeiboVideo(
             title="t", file_path="/fake.mp4", tags=[], publish_date=0,
             account_file="/fake.json", desc="", publish_strategy=PublishStrategy.IMMEDIATE,
         )
-        with patch(
-            "uploader.weibo_uploader.main._wait_for_weibo_upload_button",
-            AsyncMock(side_effect=AssertionError("button path must not run")),
-        ):
-            asyncio.run(uploader.upload_video_content(page))
-        file_input.set_input_files.assert_awaited_once_with("/fake.mp4")
+        asyncio.run(uploader.upload_video_content(page))
+        page.file_chooser.set_files.assert_awaited_once_with("/fake.mp4")
+        file_input.set_input_files.assert_not_awaited()
 
-    def test_video_upload_uses_file_chooser_when_input_is_absent(self):
+    def test_video_upload_falls_back_to_file_input_when_button_missing(self):
         from uploader.weibo_uploader.main import _select_weibo_video_file
 
-        page = WeiboUploadPage(file_input=FakeFileInput(count=0))
-        asyncio.run(_select_weibo_video_file(page, "/fake.mp4"))
-        page.file_chooser.set_files.assert_awaited_once_with("/fake.mp4")
+        file_input = FakeFileInput(count=1)
+        page = WeiboUploadPage(file_input=file_input)
+        with patch(
+            "uploader.weibo_uploader.main._wait_for_weibo_upload_button",
+            AsyncMock(side_effect=RuntimeError("未找到视频上传入口")),
+        ):
+            asyncio.run(_select_weibo_video_file(page, "/fake.mp4"))
+        file_input.set_input_files.assert_awaited_once_with("/fake.mp4")
+
+
+class _FakeVideoItemLocator:
+    """视频管理页第一个视频卡片的 fake locator。"""
+
+    def __init__(self, selectors):
+        self._selectors = selectors
+
+    def locator(self, selector):
+        return self._selectors.get(selector, _HiddenLocator())
+
+    async def click(self, timeout=30000, force=False):
+        self.clicked_with = {"timeout": timeout, "force": force}
+
+
+class _FakePopupPage:
+    url = "https://weibo.com/tv/show/1034:123?foo=1"
+
+    async def wait_for_load_state(self):
+        return None
+
+    async def close(self):
+        return None
+
+
+class _FakePopupInfo:
+    @property
+    def value(self):
+        async def resolve():
+            return _FakePopupPage()
+
+        return resolve()
+
+
+class _FakeVideoManagePage:
+    """带 expect_popup 的视频管理页 fake。"""
+
+    def __init__(self, selectors, popup_opens=True):
+        self._item = _FakeVideoItemLocator(selectors)
+        self.popup_opens = popup_opens
+        self.item = self._item
+
+    def locator(self, selector):
+        if selector == ".vue-recycle-scroller__item-view":
+            page = self
+
+            class First:
+                @property
+                def first(_self):
+                    return page._item
+
+            return First()
+        return _HiddenLocator()
+
+    def expect_popup(self, **kwargs):
+        page = self
+
+        @asynccontextmanager
+        async def popup_context():
+            if not page.popup_opens:
+                raise AssertionError("popup must not be expected when it never opens")
+            yield _FakePopupInfo()
+
+        return popup_context()
+
+
+class WeiboVideoLinkExtractionTests(unittest.TestCase):
+    def _run(self, page):
+        from uploader.weibo_uploader.main import _open_first_video_link
+
+        return asyncio.run(_open_first_video_link(page))
+
+    def test_clicks_play_icon_and_returns_popup_url_without_query(self):
+        play = _VisibleLocator()
+        img = _VisibleLocator()
+        page = _FakeVideoManagePage({"i.woo-font--play": play, "img.woo-picture-img": img})
+        link = self._run(page)
+        self.assertEqual(link, "https://weibo.com/tv/show/1034:123")
+        self.assertFalse(play.clicked_with["force"])
+        self.assertFalse(img.clicked)  # img 不应被点击
+
+    def test_falls_back_to_force_clicking_cover_image(self):
+        img = _VisibleLocator()
+        page = _FakeVideoManagePage({"img.woo-picture-img": img})
+        link = self._run(page)
+        self.assertEqual(link, "https://weibo.com/tv/show/1034:123")
+        self.assertTrue(img.clicked_with["force"])
+
+    def test_returns_none_when_nothing_clickable(self):
+        page = _FakeVideoManagePage({})
+        self.assertIsNone(self._run(page))
 
 
 class WeiboNoteUploadTests(unittest.TestCase):

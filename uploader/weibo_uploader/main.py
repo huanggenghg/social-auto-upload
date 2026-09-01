@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from patchright.async_api import Page, async_playwright
+from patchright.async_api import Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS
 from uploader.base_video import (
@@ -88,17 +88,64 @@ async def _wait_for_weibo_upload_button(
 
 
 async def _select_weibo_video_file(page: Page, file_path: str) -> None:
-    """选择视频文件：优先直接设置已有的文件输入框，无输入框时走按钮 + file chooser 后备。"""
-    file_input = page.locator('input[type="file"]').first
-    if await file_input.count():
-        await file_input.set_input_files(file_path)
-        return
+    """选择视频文件：点击"上传视频"按钮触发 file chooser。
 
-    upload_button = await _wait_for_weibo_upload_button(page)
-    async with page.expect_file_chooser(timeout=30000) as chooser_info:
-        await upload_button.click()
-    chooser = await chooser_info.value
-    await chooser.set_files(file_path)
+    页面只有在该路径下才会从上传区切换到编辑表单；直接对隐藏 input
+    set_input_files 只会发起网络上传，UI 不会进入编辑态。
+    按钮缺失（selector 漂移）时才回退到直接设置隐藏 input。
+    """
+    try:
+        upload_button = await _wait_for_weibo_upload_button(page)
+    except RuntimeError:
+        file_input = page.locator('input[type="file"]').first
+        if await file_input.count():
+            await file_input.set_input_files(file_path)
+            return
+        raise
+
+    # chooser 未弹出多为页面未就绪/点击竞态（handler 尚未挂载），
+    # 重试一次即可恢复，避免整次发布失败。
+    for _attempt in range(2):
+        try:
+            async with page.expect_file_chooser(timeout=15000) as chooser_info:
+                await upload_button.click()
+            chooser = await chooser_info.value
+            await chooser.set_files(file_path)
+            return
+        except PlaywrightTimeoutError:
+            continue
+
+    raise RuntimeError("上传视频按钮点击后未弹出文件选择框")
+
+
+async def _open_first_video_link(page: Page) -> str | None:
+    """点击视频管理页第一个视频封面，返回新页签的视频链接。
+
+    封面图被 woo-picture-cover 覆盖层拦截，直接点击 img 过不了命中检测，
+    因此优先点击封面上的播放图标；旧哈希 class 失效时回退到对封面图
+    force 点击。均失败时返回 None（链接仅是附加信息，不应让发布失败）。
+    """
+    first_video = page.locator('.vue-recycle-scroller__item-view').first
+    candidates = [
+        ('i.woo-font--play', False),
+        ('img.woo-picture-img', True),
+    ]
+    for selector, force in candidates:
+        cover = first_video.locator(selector)
+        if not await cover.count():
+            continue
+        try:
+            async with page.expect_popup(timeout=10000) as popup_info:
+                await cover.click(timeout=5000, force=force)
+            new_page = await popup_info.value
+            await new_page.wait_for_load_state()
+            link = new_page.url.split('?')[0]
+            weibo_logger.success(_msg("🔗", f"视频链接: {link}"))
+            await new_page.close()
+            return link
+        except Exception:
+            continue
+    return None
 
 
 async def _wait_for_weibo_image_input(
@@ -568,22 +615,7 @@ class WeiboVideo(WeiboBaseUploader):
 
                         # 点击第一个视频封面，会打开新页签
                         weibo_logger.info(_msg("👆", "点击第一个视频获取链接..."))
-
-                        # 监听新页签打开事件
-                        async with page.expect_popup() as popup_info:
-                            video_cover = first_video.locator('._pic_kfy49_6')
-                            await video_cover.click()
-
-                        # 获取新页签
-                        new_page = await popup_info.value
-                        await new_page.wait_for_load_state()
-
-                        # 直接使用新页签的 URL 作为视频链接
-                        video_link = new_page.url.split('?')[0]  # 去掉查询参数
-                        weibo_logger.success(_msg("🔗", f"视频链接: {video_link}"))
-
-                        # 关闭新页签
-                        await new_page.close()
+                        video_link = await _open_first_video_link(page)
                         break
                     else:
                         weibo_logger.info(_msg("⏳", f"第 {i+1} 次检查: 未发现编辑按钮，审核中..."))
