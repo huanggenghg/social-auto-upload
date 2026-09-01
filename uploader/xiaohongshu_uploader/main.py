@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from patchright.async_api import Page
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError
 from patchright.async_api import async_playwright
 
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS
@@ -579,13 +580,20 @@ class XiaoHongShuBaseUploader(BaseBrowserUploader):
 
         for tag in self.tags:
             await page.keyboard.type("#" + tag, delay=30)
-            await page.locator('#creator-editor-topic-container').wait_for(
-                state="visible",
-                timeout=3000
-            )
-            first_item = page.locator('#creator-editor-topic-container .item').first
-            await first_item.wait_for(state="visible", timeout=2000)
-            await first_item.click()
+            try:
+                await page.locator('#creator-editor-topic-container').wait_for(
+                    state="visible",
+                    timeout=8000
+                )
+                first_item = page.locator('#creator-editor-topic-container .item').first
+                await first_item.wait_for(state="visible", timeout=5000)
+                await first_item.click()
+            except PlaywrightTimeoutError:
+                # 话题建议由服务端接口驱动，偶发加载慢或无匹配；
+                # 保留纯文本话题并跳过，避免整个发布失败
+                xiaohongshu_logger.warning(
+                    _msg("⚠️", f"话题 #{tag} 建议面板未出现，保留纯文本话题继续发布")
+                )
             await page.keyboard.press("Space")
 
     async def fill_meta(self, page: Page) -> None:

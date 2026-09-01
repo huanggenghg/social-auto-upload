@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError
+
 import uploader.xiaohongshu_uploader.main as xhs_main
 
 
@@ -86,6 +88,18 @@ class RecordingPage:
 
     def locator(self, selector):
         return self.locators[selector]
+
+
+class AlwaysTimeoutTopicContainer(RecordingLocator):
+    """话题面板永远超时的 locator，模拟服务端建议未加载/无匹配。"""
+
+    def __init__(self):
+        super().__init__("topic-container-timeout")
+        self.calls = 0
+
+    async def wait_for(self, **kwargs):
+        self.calls += 1
+        raise PlaywrightTimeoutError("topic container not visible")
 
 
 class FakeLoginPage:
@@ -289,7 +303,7 @@ class XiaohongshuUploaderTests(unittest.TestCase):
         self.assertIn(("type", "#话题1", 30), page.keyboard.actions)
         self.assertEqual(
             page.locators['#creator-editor-topic-container .item'].actions,
-            [("wait_for", {"state": "visible", "timeout": 2000}), ("click",)],
+            [("wait_for", {"state": "visible", "timeout": 5000}), ("click",)],
         )
 
     def test_video_fill_meta_can_fill_first_tag_without_desc(self):
@@ -310,6 +324,49 @@ class XiaohongshuUploaderTests(unittest.TestCase):
         )
         self.assertNotIn(("type", "", None), page.keyboard.actions)
         self.assertIn(("type", "#话题1", 30), page.keyboard.actions)
+
+    def test_video_fill_tags_skips_tag_when_topic_container_times_out(self):
+        # 话题面板超时不应让整个发布失败：跳过该话题（保留纯文本），继续处理后续话题
+        app = xhs_main.XiaoHongShuVideo(
+            title="标题内容",
+            file_path="demo.mp4",
+            tags=["超时话题", "正常话题"],
+            publish_date=0,
+            account_file="account.json",
+            desc="描述内容",
+        )
+        page = RecordingPage()
+        page.locators['#creator-editor-topic-container'] = AlwaysTimeoutTopicContainer()
+
+        asyncio.run(app.fill_meta(page))  # 不应抛异常
+
+        self.assertIn(("type", "#超时话题", 30), page.keyboard.actions)
+        self.assertIn(("type", "#正常话题", 30), page.keyboard.actions)
+        # 超时话题被跳过后，仍应有 Space 分隔，避免两个话题连在一起
+        self.assertIn(("press", "Space"), page.keyboard.actions)
+
+    def test_video_fill_tags_waits_longer_for_topic_suggestions(self):
+        # 话题建议由服务端接口驱动，偶发加载慢；超时从 3s 提高到 8s
+        app = xhs_main.XiaoHongShuVideo(
+            title="标题内容",
+            file_path="demo.mp4",
+            tags=["话题1"],
+            publish_date=0,
+            account_file="account.json",
+            desc="描述内容",
+        )
+        page = RecordingPage()
+
+        asyncio.run(app.fill_meta(page))
+
+        self.assertEqual(
+            page.locators['#creator-editor-topic-container'].actions,
+            [("wait_for", {"state": "visible", "timeout": 8000})],
+        )
+        self.assertEqual(
+            page.locators['#creator-editor-topic-container .item'].actions,
+            [("wait_for", {"state": "visible", "timeout": 5000}), ("click",)],
+        )
 
     def test_note_title_defaults_do_not_override_explicit_title(self):
         app = xhs_main.XiaoHongShuNote(
