@@ -126,6 +126,15 @@ opub --help                           # 全部参数说明
 
 成功平台的分享链接写入 Excel 结果文件并显示在输出中。
 
+## 环境排查（防御性说明）
+
+Agent 的运行沙箱可能自带**独立 Python 环境**（与项目 venv、系统 Python 均不同），且 `python`、`pip`、`opub` 三者在 PATH 中可能解析到**不同的解释器**——用 `python -c "import xxx"` 诊断得到的结果可能来自与 `opub` 实际运行不同的环境。排查或修复依赖时遵守：
+
+1. **统一用 `python -m pip ...` 而不是裸 `pip`**，确保 pip 操作的就是当前 `python` 的环境。
+2. **诊断与修复必须用同一个解释器**：修复前先运行 `python -c "import opub, sys; print(sys.executable)"` 确认该环境里 opub 可导入；若 `pip show` 说已安装而 `python -c "import ..."` 报 ModuleNotFoundError，说明两者不是同一环境，先定位 opub 实际所在的解释器再操作。
+3. **多平台同时报同一非登录类错误时，优先怀疑依赖损坏而不是引导用户扫码**。典型症状：发布时报 `module 'greenlet' has no attribute 'greenlet'`（以 AUTH-001 形式出现在多个浏览器平台）——greenlet 安装不完整，残缺的包目录会被 Python 当作 namespace package（导入成功但属性缺失），而残留的 dist-info 元数据会让 pip 误判为已装好、重装 opub 也不会补上。
+4. **修复依赖损坏**：删除 site-packages 下残缺的包目录及其 `*.dist-info`（dist-info 内缺少 METADATA/RECORD 即为残骸），再 `python -m pip install --force-reinstall --no-deps <包名>` 重装，最后用 `opub --version` 验证。
+
 ## Agent 注意事项
 
 - **发布输入必须来自用户**:视频/图片路径、标题、描述、话题标签在执行前逐项向用户确认,不要自行搜索目录选文件、不要替用户编造文案。仅当用户明确授权"留空自动生成"时,才可留空 `--title`/`--desc` 走自动生成。
