@@ -82,6 +82,49 @@ async def _is_baijiahao_auth_page_valid(page: Page) -> bool:
     return any([await _is_baijiahao_locator_present(marker) for marker in publish_markers])
 
 
+async def _is_baijiahao_cover_ready(page: Page) -> bool:
+    """封面图是否已生成。
+
+    旧版编辑页封面在 div.cheetah-spin-container 内嵌 img;新版编辑页
+    (2026-09 实测)封面图 class 含 cover(src 为 blob: 或 videocover CDN)。
+    """
+    if await page.locator("div.cheetah-spin-container img").count():
+        return True
+    return bool(await page.locator('img[class*="cover"], img[src*="videocover"]').count())
+
+
+async def _set_video_covers(page: Page) -> None:
+    """设置横版/竖版封面。
+
+    新版编辑页(2026-09 实测)上传视频后默认不设置封面, 直接点发布会依次报
+    "请添加横版封面" / "请添加竖版封面"。需逐个点击仍显示"选择封面"的
+    封面入口(依次为横版、竖版, 打开"封面截取"弹窗, 默认帧已预选), 等帧
+    缩略图加载完成后再点弹窗中的"确定"完成设置 —— 帧未加载完就点"确定"
+    会关闭弹窗但不保存封面。封面已设置时(入口文案不是"选择封面")跳过。
+    """
+    for index in range(2):
+        entry = page.locator('div[class*="cover-container"]').nth(index)
+        try:
+            entry_text = await entry.inner_text()
+        except Exception as e:
+            baijiahao_logger.warning(f"读取封面入口状态失败, 跳过封面设置: {e}")
+            return
+        if "选择封面" not in entry_text:
+            baijiahao_logger.info(f"第 {index + 1} 个封面已设置, 无需重新选择")
+            continue
+        await entry.click()
+        # 上一个封面弹窗关闭后 DOM 中会残留隐藏的 .cheetah-modal-body,
+        # 必须用 :visible 限定当前弹窗, 否则帧图/确定按钮会定位到残留元素
+        frames = page.locator('.cheetah-modal-body:visible img[class*="cover-image"]')
+        await frames.first.wait_for(state="visible", timeout=15000)
+        await page.wait_for_timeout(2000)
+        confirm = page.locator('.cheetah-modal-body:visible button:has-text("确定")')
+        await confirm.wait_for(state="visible", timeout=15000)
+        await confirm.click()
+        await page.wait_for_timeout(2000)
+        baijiahao_logger.info(f"已通过封面截取弹窗设置第 {index + 1} 个封面")
+
+
 async def cookie_auth(account_file):
     """验证 cookie 是否有效 - 委托 BaiJiaHaoVideo.cookie_auth"""
     return await BaiJiaHaoVideo.cookie_auth(account_file)
@@ -167,13 +210,16 @@ class BaiJiaHaoVideo(BaseBrowserUploader):
                     await page.goto(cls.UPLOAD_URL, timeout=60000, wait_until="domcontentloaded")
                 except Exception as exc:
                     baijiahao_logger.warning(f"home 页 goto 异常(继续检测): {exc}")
-                await page.wait_for_timeout(timeout=5000)
 
-                if await _is_baijiahao_auth_page_valid(page):
-                    baijiahao_logger.success(_msg("🥳", "cookie 有效"))
-                    return True
+                # 首页 SPA 冷加载时 marker 可能 15 秒以上才渲染(高峰期更慢),
+                # 轮询 30 秒代替单次 5 秒判定, 避免有效 cookie 被误判失效
+                for _ in range(10):
+                    await page.wait_for_timeout(timeout=3000)
+                    if await _is_baijiahao_auth_page_valid(page):
+                        baijiahao_logger.success(_msg("🥳", "cookie 有效"))
+                        return True
 
-                baijiahao_logger.error("等待5秒 cookie 失效")
+                baijiahao_logger.error("首页登录态 marker 校验超时, 判定 cookie 失效")
                 return False
             except Exception:
                 return False
@@ -282,7 +328,8 @@ class BaiJiaHaoVideo(BaseBrowserUploader):
     async def upload_video_content(self, page: Page) -> str | None:
         """上传视频内容(页面已通过 _browser_session 打开)。返回视频公开链接或 None。"""
         # 直接访问带 is_from_cms=1 参数的 URL
-        await page.goto(BAIJIAHAO_UPLOAD_EDIT_URL, timeout=60000)
+        # domcontentloaded: 编辑页同登录页一样, load 事件可能长时间不触发
+        await page.goto(BAIJIAHAO_UPLOAD_EDIT_URL, timeout=60000, wait_until="domcontentloaded")
         baijiahao_logger.info(f"正在上传-------{self.title}.mp4")
         baijiahao_logger.info(f"已打开页面: {page.url}")
 
@@ -302,7 +349,8 @@ class BaiJiaHaoVideo(BaseBrowserUploader):
             visible = await input_elem.is_visible()
             baijiahao_logger.info(f"Input {i}: accept={accept}, multiple={multiple}, visible={visible}")
 
-        # 设置文件
+        # 设置文件 (编辑页 SPA 冷加载慢, input 可能 30 秒以上才挂载)
+        await page.locator("input[type=file]").first.wait_for(state="attached", timeout=60000)
         await page.locator("input[type=file]").set_input_files(self.file_path)
         baijiahao_logger.info("视频文件已选择")
 
@@ -372,7 +420,7 @@ class BaiJiaHaoVideo(BaseBrowserUploader):
         cover_deadline = time.monotonic() + BAIJIAHAO_COVER_WAIT_TIMEOUT
         while time.monotonic() < cover_deadline:
             baijiahao_logger.info("正在确认封面完成, 准备去点击定时/发布...")
-            if await page.locator("div.cheetah-spin-container img").count():
+            if await _is_baijiahao_cover_ready(page):
                 baijiahao_logger.info("封面已完成，点击定时/发布...")
                 break
             else:
@@ -380,6 +428,8 @@ class BaiJiaHaoVideo(BaseBrowserUploader):
                 await asyncio.sleep(3)
         else:
             raise TimeoutError(f"等待封面生成超时({BAIJIAHAO_COVER_WAIT_TIMEOUT}秒)")
+
+        await _set_video_covers(page)
 
         await self.select_creation_declaration(page)
         await self.publish_video(page, self.publish_date)
